@@ -13,25 +13,13 @@ function SidebarKeyboardShortcut() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    let altDown = false;
-
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "b" && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey) {
         event.preventDefault();
         toggleSidebar();
       }
-      // Track if Alt was pressed alone (no combos)
-      if (event.key === "Alt") {
-        altDown = true;
-      } else {
-        altDown = false;
-      }
-    };
-
-    const onKeyUp = (event: KeyboardEvent) => {
-      // Toggle settings on clean Alt release (no other key was pressed)
-      if (event.key === "Alt" && altDown) {
-        altDown = false;
+      if (event.key === "," && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
         const isOnSettings =
           window.location.hash.includes("/settings") ||
           window.location.pathname.includes("/settings");
@@ -46,10 +34,8 @@ function SidebarKeyboardShortcut() {
     };
 
     window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
     };
   }, [toggleSidebar, navigate]);
 

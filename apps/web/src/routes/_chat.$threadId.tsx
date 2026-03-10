@@ -5,6 +5,7 @@ import { Suspense, lazy, startTransition, useCallback, useEffect, useRef, useSta
 import ChatView from "../components/ChatView";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { parseDiffRouteSearch } from "../diffRouteSearch";
+import { useThreadRunStateStore } from "../threadRunStateStore";
 import { useStore } from "../store";
 import { SidebarInset } from "~/components/ui/sidebar";
 import { cn } from "~/lib/utils";
@@ -135,7 +136,11 @@ function ChatThreadRouteView() {
   const draftThreadProjectExists = useStore((store) =>
     draftThread === null ? false : store.projects.some((project) => project.id === draftThread.projectId),
   );
-  const routeThreadExists = threadExists || (draftThread !== null && draftThreadProjectExists);
+  const pendingRun = useThreadRunStateStore(
+    (state) => state.pendingRunByThreadId[threadId] ?? null,
+  );
+  const routeThreadExists =
+    threadExists || (draftThread !== null && draftThreadProjectExists) || pendingRun !== null;
   const diffOpen = search.diff === "1";
 
   useEffect(() => {

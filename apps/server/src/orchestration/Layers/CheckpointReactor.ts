@@ -95,23 +95,31 @@ const make = Effect.gen(function* () {
     readonly detail: string;
     readonly createdAt: string;
   }) =>
-    orchestrationEngine.dispatch({
-      type: "thread.activity.append",
-      commandId: serverCommandId("checkpoint-capture-failure"),
+    Effect.logWarning("checkpoint capture failed", {
       threadId: input.threadId,
-      activity: {
-        id: EventId.makeUnsafe(crypto.randomUUID()),
-        tone: "error",
-        kind: "checkpoint.capture.failed",
-        summary: "Checkpoint capture failed",
-        payload: {
-          detail: input.detail,
-        },
-        turnId: input.turnId,
-        createdAt: input.createdAt,
-      },
-      createdAt: input.createdAt,
-    });
+      turnId: input.turnId,
+      detail: input.detail,
+    }).pipe(
+      Effect.flatMap(() =>
+        orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId: serverCommandId("checkpoint-capture-failure"),
+          threadId: input.threadId,
+          activity: {
+            id: EventId.makeUnsafe(crypto.randomUUID()),
+            tone: "error",
+            kind: "checkpoint.capture.failed",
+            summary: "Checkpoint capture failed",
+            payload: {
+              detail: input.detail,
+            },
+            turnId: input.turnId,
+            createdAt: input.createdAt,
+          },
+          createdAt: input.createdAt,
+        }),
+      ),
+    );
 
   const resolveSessionRuntimeForThread = Effect.fnUntraced(function* (
     threadId: ThreadId,
@@ -217,10 +225,21 @@ const make = Effect.gen(function* () {
       });
     }
 
-    yield* checkpointStore.captureCheckpoint({
-      cwd: checkpointCwd,
-      checkpointRef: targetCheckpointRef,
-    });
+    yield* checkpointStore
+      .captureCheckpoint({
+        cwd: checkpointCwd,
+        checkpointRef: targetCheckpointRef,
+      })
+      .pipe(
+        Effect.tapError((error) =>
+          Effect.logWarning("checkpoint capture failed during turn completion", {
+            threadId: thread.id,
+            turnId,
+            turnCount: nextTurnCount,
+            detail: error.message,
+          }),
+        ),
+      );
 
     const files = yield* checkpointStore
       .diffCheckpoints({
@@ -581,6 +600,62 @@ const make = Effect.gen(function* () {
     }
   });
 
+  const reconcileCheckpointRefs = Effect.fnUntraced(function* () {
+    const readModel = yield* orchestrationEngine.getReadModel();
+    const now = new Date().toISOString();
+
+    for (const thread of readModel.threads) {
+      const checkpointCwd = resolveThreadWorkspaceCwd({
+        thread,
+        projects: readModel.projects,
+      });
+      if (!checkpointCwd) {
+        continue;
+      }
+
+      const isGit = yield* checkpointStore.isGitRepository(checkpointCwd);
+      if (!isGit) {
+        continue;
+      }
+
+      for (const checkpoint of thread.checkpoints) {
+        if (checkpoint.status !== "ready") {
+          continue;
+        }
+
+        const exists = yield* checkpointStore.hasCheckpointRef({
+          cwd: checkpointCwd,
+          checkpointRef: checkpoint.checkpointRef,
+        });
+        if (exists) {
+          continue;
+        }
+
+        yield* Effect.logWarning("checkpoint ref missing on disk; marking missing", {
+          threadId: thread.id,
+          turnId: checkpoint.turnId,
+          turnCount: checkpoint.checkpointTurnCount,
+          checkpointRef: checkpoint.checkpointRef,
+          cwd: checkpointCwd,
+        });
+
+        yield* orchestrationEngine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: serverCommandId("checkpoint-ref-missing"),
+          threadId: thread.id,
+          turnId: checkpoint.turnId,
+          completedAt: now,
+          checkpointRef: checkpoint.checkpointRef,
+          status: "missing",
+          files: [],
+          assistantMessageId: checkpoint.assistantMessageId ?? undefined,
+          checkpointTurnCount: checkpoint.checkpointTurnCount,
+          createdAt: now,
+        });
+      }
+    }
+  });
+
   const processInput = (
     input: ReactorInput,
   ): Effect.Effect<void, CheckpointStoreError | OrchestrationDispatchError, never> =>
@@ -603,6 +678,14 @@ const make = Effect.gen(function* () {
   const start: CheckpointReactorShape["start"] = Effect.gen(function* () {
     const queue = yield* Queue.unbounded<ReactorInput>();
     yield* Effect.addFinalizer(() => Queue.shutdown(queue).pipe(Effect.asVoid));
+
+    yield* Effect.forkScoped(
+      reconcileCheckpointRefs().pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("checkpoint ref reconciliation failed", { detail: error.message }),
+        ),
+      ),
+    );
 
     yield* Effect.forkScoped(
       Effect.forever(Queue.take(queue).pipe(Effect.flatMap(processInputSafely))),
