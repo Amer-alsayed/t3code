@@ -8,8 +8,6 @@
  */
 import { Effect, Layer, Option, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-
-import { buildNonInteractiveGitEnv } from "../../cliEnvironment";
 import { GitCommandError } from "../Errors.ts";
 import {
   ExecuteGitInput,
@@ -20,7 +18,6 @@ import {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
-const NON_INTERACTIVE_GIT_ENV = buildNonInteractiveGitEnv(process.env);
 
 function quoteGitCommand(args: ReadonlyArray<string>): string {
   return `git ${args.join(" ")}`;
@@ -86,10 +83,7 @@ const makeGitService = Effect.gen(function* () {
         .spawn(
           ChildProcess.make("git", commandInput.args, {
             cwd: commandInput.cwd,
-            env: {
-              ...NON_INTERACTIVE_GIT_ENV,
-              ...input.env,
-            },
+            ...(input.env ? { env: input.env } : {}),
           }),
         )
         .pipe(Effect.mapError(toGitCommandError(commandInput, "failed to spawn.")));
