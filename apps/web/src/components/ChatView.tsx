@@ -218,10 +218,6 @@ import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./Compose
 import { estimateTimelineMessageHeight } from "./timelineHeight";
 import { useThreadRunStateStore } from "../threadRunStateStore";
 
-function formatMessageMeta(createdAt: string, duration: string | null): string {
-  if (!duration) return formatTimestamp(createdAt);
-  return `${formatTimestamp(createdAt)} • ${duration}`;
-}
 
 function formatWorkingTimer(startIso: string, endIso: string): string | null {
   const startedAtMs = Date.parse(startIso);

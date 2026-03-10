@@ -4,7 +4,7 @@ import { Suspense, lazy, startTransition, useCallback, useEffect, useRef, useSta
 
 import ChatView from "../components/ChatView";
 import { useComposerDraftStore } from "../composerDraftStore";
-import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
+import { parseDiffRouteSearch } from "../diffRouteSearch";
 import { useStore } from "../store";
 import { SidebarInset } from "~/components/ui/sidebar";
 import { cn } from "~/lib/utils";
@@ -137,29 +137,6 @@ function ChatThreadRouteView() {
   );
   const routeThreadExists = threadExists || (draftThread !== null && draftThreadProjectExists);
   const diffOpen = search.diff === "1";
-  const closeDiff = useCallback(() => {
-    startTransition(() => {
-      void navigate({
-        to: "/$threadId",
-        params: { threadId },
-        search: (previous) => {
-          return stripDiffSearchParams(previous);
-        },
-      });
-    });
-  }, [navigate, threadId]);
-  const openDiff = useCallback(() => {
-    startTransition(() => {
-      void navigate({
-        to: "/$threadId",
-        params: { threadId },
-        search: (previous) => {
-          const rest = stripDiffSearchParams(previous);
-          return { ...rest, diff: "1" };
-        },
-      });
-    });
-  }, [navigate, threadId]);
 
   useEffect(() => {
     if (!threadsHydrated) {

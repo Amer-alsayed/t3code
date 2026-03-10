@@ -5,7 +5,7 @@ import { isElectron } from "../env";
 import { APP_STAGE_LABEL } from "../branding";
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
 import ThreadSidebar from "../components/Sidebar";
-import { Sidebar, SidebarProvider, SidebarTrigger, useSidebar } from "~/components/ui/sidebar";
+import { Sidebar, SidebarProvider, useSidebar } from "~/components/ui/sidebar";
 import { cn } from "~/lib/utils";
 
 function SidebarKeyboardShortcut() {
