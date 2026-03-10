@@ -4,14 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { ThreadId, type TurnId } from "@t3tools/contracts";
 import { ChevronLeftIcon, ChevronRightIcon, Columns2Icon, Rows3Icon } from "lucide-react";
-import {
-  type WheelEvent as ReactWheelEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type WheelEvent as ReactWheelEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { gitBranchesQueryOptions } from "~/lib/gitReactQuery";
 import { checkpointDiffQueryOptions } from "~/lib/providerReactQuery";
 import { cn } from "~/lib/utils";
@@ -406,15 +399,15 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     <>
       <div className="relative min-w-0 flex-1 [-webkit-app-region:no-drag]">
         {canScrollTurnStripLeft && (
-          <div className="pointer-events-none absolute inset-y-0 left-8 z-10 w-7 bg-linear-to-r from-card to-transparent" />
+          <div className="pointer-events-none absolute inset-y-0 left-6 z-10 w-5 bg-linear-to-r from-card to-transparent" />
         )}
         {canScrollTurnStripRight && (
-          <div className="pointer-events-none absolute inset-y-0 right-8 z-10 w-7 bg-linear-to-l from-card to-transparent" />
+          <div className="pointer-events-none absolute inset-y-0 right-6 z-10 w-5 bg-linear-to-l from-card to-transparent" />
         )}
         <button
           type="button"
           className={cn(
-            "absolute left-0 top-1/2 z-20 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-md border bg-background/90 text-muted-foreground transition-colors",
+            "absolute left-0 top-1/2 z-20 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded-md border bg-background/90 text-muted-foreground transition-colors",
             canScrollTurnStripLeft
               ? "border-border/70 hover:border-border hover:text-foreground"
               : "cursor-not-allowed border-border/40 text-muted-foreground/40",
@@ -428,7 +421,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
         <button
           type="button"
           className={cn(
-            "absolute right-0 top-1/2 z-20 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-md border bg-background/90 text-muted-foreground transition-colors",
+            "absolute right-0 top-1/2 z-20 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded-md border bg-background/90 text-muted-foreground transition-colors",
             canScrollTurnStripRight
               ? "border-border/70 hover:border-border hover:text-foreground"
               : "cursor-not-allowed border-border/40 text-muted-foreground/40",
@@ -441,7 +434,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
         </button>
         <div
           ref={turnStripRef}
-          className="turn-chip-strip flex gap-1 overflow-x-auto px-8 py-0.5"
+          className="turn-chip-strip flex gap-1 overflow-x-auto px-6 py-0.5"
           onWheel={onTurnStripWheel}
         >
           <button
@@ -516,16 +509,16 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     </>
   );
   const headerRowClassName = cn(
-    "flex items-center justify-between gap-2 px-4",
-    shouldUseDragRegion ? "drag-region h-[52px] border-b border-border" : "h-12",
+    "flex items-center justify-between gap-1 px-2 sm:gap-2 sm:px-4",
+    shouldUseDragRegion ? "drag-region h-[36px] border-b border-border" : "h-12",
   );
 
   return (
     <div
       className={cn(
-        "flex h-full min-w-0 flex-col bg-background",
+        "flex min-h-0 min-w-0 flex-1 flex-col bg-transparent",
         mode === "inline"
-          ? "w-[42vw] min-w-[360px] max-w-[560px] shrink-0 border-l border-border"
+          ? "w-[35vw] min-w-[220px] max-w-[560px] shrink-0 border-l border-border"
           : "w-full",
       )}
     >
@@ -553,7 +546,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
         <>
           <div
             ref={patchViewportRef}
-            className="diff-panel-viewport min-h-0 min-w-0 flex-1 overflow-hidden"
+            className="diff-panel-viewport min-h-0 min-w-0 flex-1 overflow-hidden flex flex-col"
           >
             {checkpointDiffError && !renderablePatch && (
               <div className="px-3">
@@ -561,7 +554,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
               </div>
             )}
             {!renderablePatch ? (
-              <div className="flex h-full items-center justify-center px-3 py-2 text-xs text-muted-foreground/70">
+              <div className="flex flex-1 min-h-0 items-center justify-center px-3 py-2 text-xs text-muted-foreground/70">
                 <p>
                   {isLoadingCheckpointDiff
                     ? "Loading checkpoint diff..."
@@ -571,8 +564,8 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
                 </p>
               </div>
             ) : renderablePatch.kind === "files" ? (
-              <Virtualizer
-                className="diff-render-surface h-full min-h-0 overflow-auto px-2 pb-2"
+               <Virtualizer
+                className="diff-render-surface flex-1 min-h-0 overflow-auto px-2 pb-2"
                 config={{
                   overscrollSize: 600,
                   intersectionObserverMargin: 1200,
@@ -613,7 +606,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
                 })}
               </Virtualizer>
             ) : (
-              <div className="h-full overflow-auto p-2">
+              <div className="flex-1 min-h-0 overflow-auto p-2">
                 <div className="space-y-2">
                   <p className="text-[11px] text-muted-foreground/75">{renderablePatch.reason}</p>
                   <pre className="max-h-[72vh] overflow-auto rounded-md border border-border/70 bg-background/70 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground/90">

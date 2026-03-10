@@ -20,7 +20,9 @@ function makeTempDir(prefix: string): string {
   return dir;
 }
 
-async function withRouteServer(run: (baseUrl: string) => Promise<void>): Promise<void> {
+async function withRouteServer(
+  run: (baseUrl: string) => Promise<void>,
+): Promise<void> {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     if (tryHandleProjectFaviconRequest(url, res)) {
@@ -102,10 +104,7 @@ describe("tryHandleProjectFaviconRequest", () => {
     const projectDir = makeTempDir("t3code-favicon-route-source-");
     const iconPath = path.join(projectDir, "public", "brand", "logo.svg");
     fs.mkdirSync(path.dirname(iconPath), { recursive: true });
-    fs.writeFileSync(
-      path.join(projectDir, "index.html"),
-      '<link rel="icon" href="/brand/logo.svg">',
-    );
+    fs.writeFileSync(path.join(projectDir, "index.html"), '<link rel="icon" href="/brand/logo.svg">');
     fs.writeFileSync(iconPath, "<svg>brand</svg>", "utf8");
 
     await withRouteServer(async (baseUrl) => {
@@ -121,10 +120,7 @@ describe("tryHandleProjectFaviconRequest", () => {
     const projectDir = makeTempDir("t3code-favicon-route-html-order-");
     const iconPath = path.join(projectDir, "public", "brand", "logo.svg");
     fs.mkdirSync(path.dirname(iconPath), { recursive: true });
-    fs.writeFileSync(
-      path.join(projectDir, "index.html"),
-      '<link href="/brand/logo.svg" rel="icon">',
-    );
+    fs.writeFileSync(path.join(projectDir, "index.html"), '<link href="/brand/logo.svg" rel="icon">');
     fs.writeFileSync(iconPath, "<svg>brand-html-order</svg>", "utf8");
 
     await withRouteServer(async (baseUrl) => {

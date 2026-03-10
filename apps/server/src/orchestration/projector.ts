@@ -22,6 +22,7 @@ import {
   ThreadRuntimeModeSetPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
+  ThreadTurnInterruptRequestedPayload,
   ThreadTurnDiffCompletedPayload,
 } from "./Schemas.ts";
 
@@ -304,7 +305,12 @@ export function projectEvent(
       );
 
     case "thread.runtime-mode-set":
-      return decodeForEvent(ThreadRuntimeModeSetPayload, event.payload, event.type, "payload").pipe(
+      return decodeForEvent(
+        ThreadRuntimeModeSetPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
         Effect.map((payload) => ({
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
@@ -435,6 +441,41 @@ export function projectEvent(
                         : null,
                   }
                 : thread.latestTurn,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.turn-interrupt-requested":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadTurnInterruptRequestedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+
+        if (
+          payload.turnId === undefined ||
+          thread.latestTurn === null ||
+          thread.latestTurn.turnId !== payload.turnId
+        ) {
+          return nextBase;
+        }
+
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            latestTurn: {
+              ...thread.latestTurn,
+              state: "interrupted",
+              completedAt: thread.latestTurn.completedAt ?? payload.createdAt,
+              startedAt: thread.latestTurn.startedAt ?? payload.createdAt,
+            },
             updatedAt: event.occurredAt,
           }),
         };

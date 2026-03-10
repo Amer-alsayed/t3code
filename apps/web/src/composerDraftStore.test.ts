@@ -1,11 +1,7 @@
 import { ProjectId, ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  type ComposerImageAttachment,
-  createDebouncedStorage,
-  useComposerDraftStore,
-} from "./composerDraftStore";
+import { type ComposerImageAttachment, useComposerDraftStore } from "./composerDraftStore";
 
 function makeImage(input: {
   id: string;
@@ -252,9 +248,9 @@ describe("composerDraftStore project draft thread mapping", () => {
     store.clearProjectDraftThreadId(projectId);
 
     expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)).toBeNull();
-    expect(
-      useComposerDraftStore.getState().getDraftThreadByProjectId(otherProjectId)?.threadId,
-    ).toBe(threadId);
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(otherProjectId)?.threadId).toBe(
+      threadId,
+    );
     expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.prompt).toBe("keep me");
   });
 
@@ -264,6 +260,26 @@ describe("composerDraftStore project draft thread mapping", () => {
     store.clearDraftThread(threadId);
     expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)).toBeNull();
     expect(useComposerDraftStore.getState().getDraftThread(threadId)).toBeNull();
+  });
+
+  it("removes orphaned project draft state while keeping drafts for live server threads", () => {
+    const store = useComposerDraftStore.getState();
+    const liveServerThreadId = ThreadId.makeUnsafe("thread-live");
+    store.setProjectDraftThreadId(projectId, threadId);
+    store.setPrompt(threadId, "remove me");
+    store.setPrompt(liveServerThreadId, "keep me");
+
+    store.removeOrphanedDraftState({
+      projectIds: new Set<ProjectId>([otherProjectId]),
+      threadIds: new Set<ThreadId>([liveServerThreadId]),
+    });
+
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)).toBeNull();
+    expect(useComposerDraftStore.getState().getDraftThread(threadId)).toBeNull();
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toBeUndefined();
+    expect(useComposerDraftStore.getState().draftsByThreadId[liveServerThreadId]?.prompt).toBe(
+      "keep me",
+    );
   });
 
   it("updates branch context on an existing draft thread", () => {
@@ -380,9 +396,7 @@ describe("composerDraftStore setModel", () => {
 
     store.setModel(threadId, "gpt-5.3-codex");
 
-    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.model).toBe(
-      "gpt-5.3-codex",
-    );
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.model).toBe("gpt-5.3-codex");
   });
 });
 
@@ -455,127 +469,5 @@ describe("composerDraftStore runtime and interaction settings", () => {
     store.setInteractionMode(threadId, null);
 
     expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// createDebouncedStorage
-// ---------------------------------------------------------------------------
-
-function createMockStorage() {
-  const store = new Map<string, string>();
-  return {
-    getItem: vi.fn((name: string) => store.get(name) ?? null),
-    setItem: vi.fn((name: string, value: string) => {
-      store.set(name, value);
-    }),
-    removeItem: vi.fn((name: string) => {
-      store.delete(name);
-    }),
-  };
-}
-
-describe("createDebouncedStorage", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("delegates getItem immediately", () => {
-    const base = createMockStorage();
-    base.getItem.mockReturnValueOnce("value");
-    const storage = createDebouncedStorage(base);
-
-    expect(storage.getItem("key")).toBe("value");
-    expect(base.getItem).toHaveBeenCalledWith("key");
-  });
-
-  it("does not write to base storage until the debounce fires", () => {
-    const base = createMockStorage();
-    const storage = createDebouncedStorage(base);
-
-    storage.setItem("key", "v1");
-    expect(base.setItem).not.toHaveBeenCalled();
-
-    vi.advanceTimersByTime(299);
-    expect(base.setItem).not.toHaveBeenCalled();
-
-    vi.advanceTimersByTime(1);
-    expect(base.setItem).toHaveBeenCalledWith("key", "v1");
-  });
-
-  it("only writes the last value when setItem is called rapidly", () => {
-    const base = createMockStorage();
-    const storage = createDebouncedStorage(base);
-
-    storage.setItem("key", "v1");
-    storage.setItem("key", "v2");
-    storage.setItem("key", "v3");
-
-    vi.advanceTimersByTime(300);
-    expect(base.setItem).toHaveBeenCalledTimes(1);
-    expect(base.setItem).toHaveBeenCalledWith("key", "v3");
-  });
-
-  it("removeItem cancels a pending setItem write", () => {
-    const base = createMockStorage();
-    const storage = createDebouncedStorage(base);
-
-    storage.setItem("key", "v1");
-    storage.removeItem("key");
-
-    vi.advanceTimersByTime(300);
-    expect(base.setItem).not.toHaveBeenCalled();
-    expect(base.removeItem).toHaveBeenCalledWith("key");
-  });
-
-  it("flush writes the pending value immediately", () => {
-    const base = createMockStorage();
-    const storage = createDebouncedStorage(base);
-
-    storage.setItem("key", "v1");
-    expect(base.setItem).not.toHaveBeenCalled();
-
-    storage.flush();
-    expect(base.setItem).toHaveBeenCalledWith("key", "v1");
-
-    // Timer should be cancelled; no duplicate write.
-    vi.advanceTimersByTime(300);
-    expect(base.setItem).toHaveBeenCalledTimes(1);
-  });
-
-  it("flush is a no-op when nothing is pending", () => {
-    const base = createMockStorage();
-    const storage = createDebouncedStorage(base);
-
-    storage.flush();
-    expect(base.setItem).not.toHaveBeenCalled();
-  });
-
-  it("flush after removeItem is a no-op", () => {
-    const base = createMockStorage();
-    const storage = createDebouncedStorage(base);
-
-    storage.setItem("key", "v1");
-    storage.removeItem("key");
-    storage.flush();
-
-    expect(base.setItem).not.toHaveBeenCalled();
-  });
-
-  it("setItem works normally after removeItem cancels a pending write", () => {
-    const base = createMockStorage();
-    const storage = createDebouncedStorage(base);
-
-    storage.setItem("key", "v1");
-    storage.removeItem("key");
-    storage.setItem("key", "v2");
-
-    vi.advanceTimersByTime(300);
-    expect(base.setItem).toHaveBeenCalledTimes(1);
-    expect(base.setItem).toHaveBeenCalledWith("key", "v2");
   });
 });

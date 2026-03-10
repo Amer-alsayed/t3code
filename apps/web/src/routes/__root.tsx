@@ -1,4 +1,4 @@
-import { ThreadId } from "@t3tools/contracts";
+import { ProjectId, ThreadId } from "@t3tools/contracts";
 import {
   Outlet,
   createRootRouteWithContext,
@@ -6,9 +6,8 @@ import {
   useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { startTransition, useEffect, useRef } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
-import { Throttler } from "@tanstack/react-pacer";
 
 import { APP_DISPLAY_NAME } from "../branding";
 import { Button } from "../components/ui/button";
@@ -18,6 +17,7 @@ import { readNativeApi } from "../nativeApi";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useStore } from "../store";
 import { useTerminalStateStore } from "../terminalStateStore";
+import { useThreadRunStateStore } from "../threadRunStateStore";
 import { preferredTerminalEditor } from "../terminal-links";
 import { terminalRunningSubprocessFromEvent } from "../terminalActivity";
 import { onServerConfigUpdated, onServerWelcome } from "../wsNativeApi";
@@ -135,6 +135,11 @@ function EventRouter() {
   const removeOrphanedTerminalStates = useTerminalStateStore(
     (store) => store.removeOrphanedTerminalStates,
   );
+  const removeOrphanedDraftState = useComposerDraftStore((store) => store.removeOrphanedDraftState);
+  const syncPendingRuns = useThreadRunStateStore((store) => store.syncPendingRuns);
+  const removeOrphanedPendingRuns = useThreadRunStateStore(
+    (store) => store.removeOrphanedPendingRuns,
+  );
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
@@ -151,24 +156,40 @@ function EventRouter() {
     let latestSequence = 0;
     let syncing = false;
     let pending = false;
-    let needsProviderInvalidation = false;
+    let scheduledSyncTimeoutId: number | null = null;
 
     const flushSnapshotSync = async (): Promise<void> => {
       const snapshot = await api.orchestration.getSnapshot();
       if (disposed) return;
       latestSequence = Math.max(latestSequence, snapshot.snapshotSequence);
-      syncServerReadModel(snapshot);
-      const draftThreadIds = Object.keys(
-        useComposerDraftStore.getState().draftThreadsByThreadId,
-      ) as ThreadId[];
-      const activeThreadIds = collectActiveTerminalThreadIds({
-        snapshotThreads: snapshot.threads,
-        draftThreadIds,
+      startTransition(() => {
+        syncServerReadModel(snapshot);
+        syncPendingRuns(snapshot);
+        removeOrphanedDraftState({
+          projectIds: new Set(
+            snapshot.projects
+              .filter((project) => project.deletedAt === null)
+              .map((project) => ProjectId.makeUnsafe(project.id)),
+          ),
+          threadIds: new Set(
+            snapshot.threads
+              .filter((thread) => thread.deletedAt === null)
+              .map((thread) => ThreadId.makeUnsafe(thread.id)),
+          ),
+        });
+        const draftThreadIds = Object.keys(
+          useComposerDraftStore.getState().draftThreadsByThreadId,
+        ) as ThreadId[];
+        const activeThreadIds = collectActiveTerminalThreadIds({
+          snapshotThreads: snapshot.threads,
+          draftThreadIds,
+        });
+        removeOrphanedTerminalStates(activeThreadIds);
+        removeOrphanedPendingRuns(activeThreadIds);
       });
-      removeOrphanedTerminalStates(activeThreadIds);
       if (pending) {
         pending = false;
-        await flushSnapshotSync();
+        scheduleSnapshotSync(16);
       }
     };
 
@@ -187,20 +208,24 @@ function EventRouter() {
       syncing = false;
     };
 
-    const domainEventFlushThrottler = new Throttler(
-      () => {
-        if (needsProviderInvalidation) {
-          needsProviderInvalidation = false;
-          void queryClient.invalidateQueries({ queryKey: providerQueryKeys.all });
-        }
+    const scheduleSnapshotSync = (delayMs = 0) => {
+      if (disposed) {
+        return;
+      }
+      if (syncing) {
+        pending = true;
+        return;
+      }
+      if (scheduledSyncTimeoutId !== null) {
+        return;
+      }
+      scheduledSyncTimeoutId = window.setTimeout(() => {
+        scheduledSyncTimeoutId = null;
         void syncSnapshot();
-      },
-      {
-        wait: 100,
-        leading: false,
-        trailing: true,
-      },
-    );
+      }, delayMs);
+    };
+
+    void syncSnapshot().catch(() => undefined);
 
     const unsubDomainEvent = api.orchestration.onDomainEvent((event) => {
       if (event.sequence <= latestSequence) {
@@ -208,9 +233,9 @@ function EventRouter() {
       }
       latestSequence = event.sequence;
       if (event.type === "thread.turn-diff-completed" || event.type === "thread.reverted") {
-        needsProviderInvalidation = true;
+        void queryClient.invalidateQueries({ queryKey: providerQueryKeys.all });
       }
-      domainEventFlushThrottler.maybeExecute();
+      scheduleSnapshotSync(16);
     });
     const unsubTerminalEvent = api.terminal.onEvent((event) => {
       const hasRunningSubprocess = terminalRunningSubprocessFromEvent(event);
@@ -295,8 +320,9 @@ function EventRouter() {
     });
     return () => {
       disposed = true;
-      needsProviderInvalidation = false;
-      domainEventFlushThrottler.cancel();
+      if (scheduledSyncTimeoutId !== null) {
+        window.clearTimeout(scheduledSyncTimeoutId);
+      }
       unsubDomainEvent();
       unsubTerminalEvent();
       unsubWelcome();
@@ -305,8 +331,11 @@ function EventRouter() {
   }, [
     navigate,
     queryClient,
+    removeOrphanedDraftState,
     removeOrphanedTerminalStates,
+    removeOrphanedPendingRuns,
     setProjectExpanded,
+    syncPendingRuns,
     syncServerReadModel,
   ]);
 

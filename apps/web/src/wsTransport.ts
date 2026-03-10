@@ -44,7 +44,7 @@ export class WsTransport {
         ? bridgeUrl
         : envUrl && envUrl.length > 0
           ? envUrl
-          : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:${window.location.port}`);
+          : `ws://${window.location.hostname}:${window.location.port}`);
     this.connect();
   }
 

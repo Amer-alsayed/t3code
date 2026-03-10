@@ -1,7 +1,7 @@
 "use client";
 
 import { Toast } from "@base-ui/react/toast";
-import { useEffect, type CSSProperties } from "react";
+import { useEffect } from "react";
 import { useParams } from "@tanstack/react-router";
 import { ThreadId } from "@t3tools/contracts";
 import {
@@ -14,7 +14,7 @@ import {
 
 import { cn } from "~/lib/utils";
 import { buttonVariants } from "~/components/ui/button";
-import { buildVisibleToastLayout, shouldHideCollapsedToastContent } from "./toast.logic";
+import { shouldHideCollapsedToastContent } from "./toast.logic";
 
 type ThreadToastData = {
   threadId?: ThreadId | null;
@@ -158,7 +158,6 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
   const visibleToasts = toasts.filter((toast) =>
     shouldRenderForActiveThread(toast.data, activeThreadId),
   );
-  const visibleToastLayout = buildVisibleToastLayout(visibleToasts);
 
   useEffect(() => {
     const activeToastIds = new Set(toasts.map((toast) => toast.id));
@@ -173,7 +172,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
     <Toast.Portal data-slot="toast-portal">
       <Toast.Viewport
         className={cn(
-          "fixed z-50 mx-auto flex w-[calc(100%-var(--toast-inset)*2)] max-w-90 [--toast-header-offset:52px] [--toast-inset:--spacing(4)] sm:[--toast-inset:--spacing(8)]",
+          "fixed z-50 mx-auto flex w-[calc(100%-var(--toast-inset)*2)] max-w-90 [--toast-header-offset:36px] [--toast-inset:--spacing(4)] sm:[--toast-inset:--spacing(8)]",
           // Vertical positioning
           "data-[position*=top]:top-[calc(var(--toast-inset)+var(--toast-header-offset))]",
           "data-[position*=bottom]:bottom-(--toast-inset)",
@@ -184,17 +183,12 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
         )}
         data-position={position}
         data-slot="toast-viewport"
-        style={
-          {
-            "--toast-frontmost-height": `${visibleToastLayout.frontmostHeight}px`,
-          } as CSSProperties
-        }
       >
-        {visibleToastLayout.items.map(({ toast, visibleIndex, offsetY }) => {
+        {visibleToasts.map((toast, visibleIndex) => {
           const Icon = toast.type ? TOAST_ICONS[toast.type as keyof typeof TOAST_ICONS] : null;
           const hideCollapsedContent = shouldHideCollapsedToastContent(
             visibleIndex,
-            visibleToastLayout.items.length,
+            visibleToasts.length,
           );
 
           return (
@@ -247,12 +241,6 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
               )}
               data-position={position}
               key={toast.id}
-              style={
-                {
-                  "--toast-index": visibleIndex,
-                  "--toast-offset-y": `${offsetY}px`,
-                } as CSSProperties
-              }
               swipeDirection={
                 position.includes("center")
                   ? [isTop ? "up" : "down"]

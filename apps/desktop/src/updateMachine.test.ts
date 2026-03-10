@@ -13,17 +13,11 @@ import {
   reduceDesktopUpdateStateOnUpdateAvailable,
 } from "./updateMachine";
 
-const runtimeInfo = {
-  hostArch: "x64",
-  appArch: "x64",
-  runningUnderArm64Translation: false,
-} as const;
-
 describe("updateMachine", () => {
   it("clears transient errors when a check starts", () => {
     const state = reduceDesktopUpdateStateOnCheckStart(
       {
-        ...createInitialDesktopUpdateState("1.0.0", runtimeInfo),
+        ...createInitialDesktopUpdateState("1.0.0"),
         enabled: true,
         status: "error",
         message: "network",
@@ -42,7 +36,7 @@ describe("updateMachine", () => {
   it("records a check failure without exposing an action", () => {
     const state = reduceDesktopUpdateStateOnCheckFailure(
       {
-        ...createInitialDesktopUpdateState("1.0.0", runtimeInfo),
+        ...createInitialDesktopUpdateState("1.0.0"),
         enabled: true,
         status: "checking",
       },
@@ -58,7 +52,7 @@ describe("updateMachine", () => {
   it("preserves available version on download failure for retry", () => {
     const state = reduceDesktopUpdateStateOnDownloadFailure(
       {
-        ...createInitialDesktopUpdateState("1.0.0", runtimeInfo),
+        ...createInitialDesktopUpdateState("1.0.0"),
         enabled: true,
         status: "downloading",
         availableVersion: "1.1.0",
@@ -76,17 +70,14 @@ describe("updateMachine", () => {
   it("transitions to downloaded and then preserves install retry state", () => {
     const downloaded = reduceDesktopUpdateStateOnDownloadComplete(
       {
-        ...createInitialDesktopUpdateState("1.0.0", runtimeInfo),
+        ...createInitialDesktopUpdateState("1.0.0"),
         enabled: true,
         status: "downloading",
         availableVersion: "1.1.0",
       },
       "1.1.0",
     );
-    const failedInstall = reduceDesktopUpdateStateOnInstallFailure(
-      downloaded,
-      "backend shutdown timed out",
-    );
+    const failedInstall = reduceDesktopUpdateStateOnInstallFailure(downloaded, "backend shutdown timed out");
 
     expect(downloaded.status).toBe("downloaded");
     expect(downloaded.downloadedVersion).toBe("1.1.0");
@@ -98,7 +89,7 @@ describe("updateMachine", () => {
   it("clears stale download state when no update is available", () => {
     const state = reduceDesktopUpdateStateOnNoUpdate(
       {
-        ...createInitialDesktopUpdateState("1.0.0", runtimeInfo),
+        ...createInitialDesktopUpdateState("1.0.0"),
         enabled: true,
         status: "error",
         availableVersion: "1.1.0",
@@ -120,7 +111,7 @@ describe("updateMachine", () => {
   it("tracks available, download start, and progress cleanly", () => {
     const available = reduceDesktopUpdateStateOnUpdateAvailable(
       {
-        ...createInitialDesktopUpdateState("1.0.0", runtimeInfo),
+        ...createInitialDesktopUpdateState("1.0.0"),
         enabled: true,
         status: "checking",
       },

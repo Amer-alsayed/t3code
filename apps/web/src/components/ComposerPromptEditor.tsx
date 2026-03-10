@@ -1,4 +1,7 @@
-import { LexicalComposer, type InitialConfigType } from "@lexical/react/LexicalComposer";
+import {
+  LexicalComposer,
+  type InitialConfigType,
+} from "@lexical/react/LexicalComposer";
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 import { ContentEditable } from "@lexical/react/LexicalContentEditable";
 import { LexicalErrorBoundary } from "@lexical/react/LexicalErrorBoundary";
@@ -328,11 +331,12 @@ function $setSelectionAtComposerOffset(nextOffset: number): void {
   const composerLength = $getComposerRootLength();
   const boundedOffset = Math.max(0, Math.min(nextOffset, composerLength));
   const remainingRef = { value: boundedOffset };
-  const point = findSelectionPointAtOffset(root, remainingRef) ?? {
-    key: root.getKey(),
-    offset: root.getChildren().length,
-    type: "element" as const,
-  };
+  const point =
+    findSelectionPointAtOffset(root, remainingRef) ?? {
+      key: root.getKey(),
+      offset: root.getChildren().length,
+      type: "element" as const,
+    };
   const selection = $createRangeSelection();
   selection.anchor.set(point.key, point.offset, point.type);
   selection.focus.set(point.key, point.offset, point.type);
@@ -720,10 +724,7 @@ function ComposerPromptEditorInner({
     editorState.read(() => {
       const nextValue = $getRoot().getTextContent();
       const fallbackCursor = clampCursor(nextValue, snapshotRef.current.cursor);
-      const nextCursor = clampCursor(
-        nextValue,
-        $readSelectionOffsetFromEditorState(fallbackCursor),
-      );
+      const nextCursor = clampCursor(nextValue, $readSelectionOffsetFromEditorState(fallbackCursor));
       const previousSnapshot = snapshotRef.current;
       if (previousSnapshot.value === nextValue && previousSnapshot.cursor === nextCursor) {
         return;
@@ -754,7 +755,7 @@ function ComposerPromptEditorInner({
           />
         }
         placeholder={
-          <div className="pointer-events-none absolute inset-0 text-[14px] leading-relaxed text-muted-foreground/35">
+          <div className="pointer-events-none absolute inset-0 text-[14px] leading-relaxed text-muted-foreground/35 not-dark:text-muted-foreground/55">
             {placeholder}
           </div>
         }
@@ -770,42 +771,41 @@ function ComposerPromptEditorInner({
   );
 }
 
-export const ComposerPromptEditor = forwardRef<
-  ComposerPromptEditorHandle,
-  ComposerPromptEditorProps
->(function ComposerPromptEditor(
-  { value, cursor, disabled, placeholder, className, onChange, onCommandKeyDown, onPaste },
-  ref,
-) {
-  const initialValueRef = useRef(value);
-  const initialConfig = useMemo<InitialConfigType>(
-    () => ({
-      namespace: "t3tools-composer-editor",
-      editable: true,
-      nodes: [ComposerMentionNode],
-      editorState: () => {
-        $setComposerEditorPrompt(initialValueRef.current);
-      },
-      onError: (error) => {
-        throw error;
-      },
-    }),
-    [],
-  );
+export const ComposerPromptEditor = forwardRef<ComposerPromptEditorHandle, ComposerPromptEditorProps>(
+  function ComposerPromptEditor(
+    { value, cursor, disabled, placeholder, className, onChange, onCommandKeyDown, onPaste },
+    ref,
+  ) {
+    const initialValueRef = useRef(value);
+    const initialConfig = useMemo<InitialConfigType>(
+      () => ({
+        namespace: "t3tools-composer-editor",
+        editable: true,
+        nodes: [ComposerMentionNode],
+        editorState: () => {
+          $setComposerEditorPrompt(initialValueRef.current);
+        },
+        onError: (error) => {
+          throw error;
+        },
+      }),
+      [],
+    );
 
-  return (
-    <LexicalComposer key={COMPOSER_EDITOR_HMR_KEY} initialConfig={initialConfig}>
-      <ComposerPromptEditorInner
-        value={value}
-        cursor={cursor}
-        disabled={disabled}
-        placeholder={placeholder}
-        onChange={onChange}
-        onPaste={onPaste}
-        editorRef={ref}
-        {...(onCommandKeyDown ? { onCommandKeyDown } : {})}
-        {...(className ? { className } : {})}
-      />
-    </LexicalComposer>
-  );
-});
+    return (
+      <LexicalComposer key={COMPOSER_EDITOR_HMR_KEY} initialConfig={initialConfig}>
+        <ComposerPromptEditorInner
+          value={value}
+          cursor={cursor}
+          disabled={disabled}
+          placeholder={placeholder}
+          onChange={onChange}
+          onPaste={onPaste}
+          editorRef={ref}
+          {...(onCommandKeyDown ? { onCommandKeyDown } : {})}
+          {...(className ? { className } : {})}
+        />
+      </LexicalComposer>
+    );
+  },
+);

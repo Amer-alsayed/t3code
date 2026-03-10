@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import rootPackageJson from "../package.json" with { type: "json" };
@@ -10,6 +10,7 @@ import serverPackageJson from "../apps/server/package.json" with { type: "json" 
 
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
+import { rcedit } from "rcedit";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -17,16 +18,18 @@ import { Config, Data, Effect, FileSystem, Layer, Logger, Option, Path, Schema }
 import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+const BUN_CMD = process.platform === "win32" ? "bun.cmd" : "bun";
+const BUNX_CMD = process.platform === "win32" ? "bunx.cmd" : "bunx";
+const WIN_SHELL = process.platform === "win32" ? { shell: true as const } : {};
+
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
 
 const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
 );
-const ProductionMacIconSource = Effect.zipWith(
-  RepoRoot,
-  Effect.service(Path.Path),
-  (repoRoot, path) => path.join(repoRoot, BRAND_ASSET_PATHS.productionMacIconPng),
+const ProductionMacIconSource = Effect.zipWith(RepoRoot, Effect.service(Path.Path), (repoRoot, path) =>
+  path.join(repoRoot, BRAND_ASSET_PATHS.productionMacIconPng),
 );
 const ProductionLinuxIconSource = Effect.zipWith(
   RepoRoot,
@@ -37,6 +40,11 @@ const ProductionWindowsIconSource = Effect.zipWith(
   RepoRoot,
   Effect.service(Path.Path),
   (repoRoot, path) => path.join(repoRoot, BRAND_ASSET_PATHS.productionWindowsIconIco),
+);
+const ProductionWindowsIconPngSource = Effect.zipWith(
+  RepoRoot,
+  Effect.service(Path.Path),
+  (repoRoot, path) => path.join(repoRoot, BRAND_ASSET_PATHS.productionWindowsIconPng),
 );
 const encodeJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
 
@@ -150,6 +158,101 @@ function resolvePythonForNodeGyp(): string | undefined {
   }
 
   return executable;
+}
+
+interface VisualStudioCompatibilityEnv {
+  readonly VCINSTALLDIR: string;
+  readonly VSINSTALLDIR: string;
+  readonly VSCMD_VER: string;
+  readonly GYP_MSVS_VERSION: string;
+  readonly npm_config_msvs_version: string;
+  readonly WindowsSDKVersion?: string;
+}
+
+interface VisualStudioInstance {
+  readonly installationPath?: string;
+  readonly installationVersion?: string;
+  readonly isComplete?: boolean;
+}
+
+function resolveLatestWindowsSdkVersion(): string | undefined {
+  const sdkRoot = "C:\\Program Files (x86)\\Windows Kits\\10\\Lib";
+  if (!existsSync(sdkRoot)) {
+    return undefined;
+  }
+
+  const versions = readdirSync(sdkRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter((name) => /^\d+\.\d+\.\d+\.\d+$/.test(name))
+    .toSorted((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+
+  const latest = versions[0];
+  return latest ? `${latest}\\` : undefined;
+}
+
+function resolveVisualStudioCompatibilityEnv(): VisualStudioCompatibilityEnv | undefined {
+  if (process.platform !== "win32") {
+    return undefined;
+  }
+
+  const vswherePath = "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe";
+  if (!existsSync(vswherePath)) {
+    return undefined;
+  }
+
+  const result = spawnSync(
+    vswherePath,
+    ["-latest", "-products", "*", "-format", "json", "-utf8"],
+    { encoding: "utf8" },
+  );
+  if (result.status !== 0) {
+    return undefined;
+  }
+
+  const rawOutput = result.stdout.trim();
+  if (!rawOutput) {
+    return undefined;
+  }
+
+  let instances: ReadonlyArray<VisualStudioInstance>;
+  try {
+    instances = JSON.parse(rawOutput) as ReadonlyArray<VisualStudioInstance>;
+  } catch {
+    return undefined;
+  }
+
+  const latestInstance = instances.find((instance) => instance.isComplete !== false);
+  const installationPath = latestInstance?.installationPath;
+  const installationVersion = latestInstance?.installationVersion;
+  if (!installationPath || !installationVersion) {
+    return undefined;
+  }
+
+  const versionMajor = Number.parseInt(installationVersion.split(".")[0] ?? "", 10);
+  if (!Number.isFinite(versionMajor) || versionMajor <= 17) {
+    return undefined;
+  }
+
+  const vcInstallDir = join(installationPath, "VC");
+  const msBuildPath = join(installationPath, "MSBuild", "Current", "Bin", "MSBuild.exe");
+  const toolsetDir = join(vcInstallDir, "Tools", "MSVC");
+  if (!existsSync(vcInstallDir) || !existsSync(msBuildPath) || !existsSync(toolsetDir)) {
+    return undefined;
+  }
+
+  const windowsSdkVersion = resolveLatestWindowsSdkVersion();
+
+  return {
+    VCINSTALLDIR: vcInstallDir,
+    VSINSTALLDIR: installationPath,
+    // node-gyp only recognizes up to VS 2022 today. Present newer installs as a
+    // compatible 2022 developer environment when the required toolchain exists.
+    VSCMD_VER: "17.0",
+    GYP_MSVS_VERSION: "2022",
+    npm_config_msvs_version: "2022",
+    ...(windowsSdkVersion ? { WindowsSDKVersion: windowsSdkVersion } : {}),
+  };
 }
 
 interface ResolvedBuildOptions {
@@ -353,17 +456,70 @@ function stageWindowsIcons(stageResourcesDir: string) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const iconSource = yield* ProductionWindowsIconSource;
-    if (!(yield* fs.exists(iconSource))) {
+    const iconIcoSource = yield* ProductionWindowsIconSource;
+    const iconPngSource = yield* ProductionWindowsIconPngSource;
+    if (!(yield* fs.exists(iconIcoSource))) {
       return yield* new BuildScriptError({
-        message: `Production Windows icon source is missing at ${iconSource}`,
+        message: `Production Windows icon source is missing at ${iconIcoSource}`,
       });
     }
 
-    const iconPath = path.join(stageResourcesDir, "icon.ico");
-    yield* fs.copyFile(iconSource, iconPath);
+    if (!(yield* fs.exists(iconPngSource))) {
+      return yield* new BuildScriptError({
+        message: `Production Windows PNG icon source is missing at ${iconPngSource}`,
+      });
+    }
+
+    yield* fs.copyFile(iconIcoSource, path.join(stageResourcesDir, "icon.ico"));
+    yield* fs.copyFile(iconPngSource, path.join(stageResourcesDir, "icon.png"));
   });
 }
+
+const patchWindowsExecutableIcon = Effect.fn("patchWindowsExecutableIcon")(function* (
+  executablePath: string,
+  iconPath: string,
+) {
+  yield* Effect.tryPromise({
+    try: () =>
+      rcedit(executablePath, {
+        icon: iconPath,
+      }),
+    catch: (cause) =>
+      new BuildScriptError({
+        message: `Failed to patch Windows executable icon for ${executablePath}.`,
+        cause,
+      }),
+  });
+});
+
+const resolveWindowsUnpackedAppDir = Effect.fn("resolveWindowsUnpackedAppDir")(function* (
+  stageDistDir: string,
+  productName: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const stageEntries = yield* fs.readDirectory(stageDistDir);
+
+  for (const entry of stageEntries) {
+    if (!entry.endsWith("-unpacked")) continue;
+
+    const candidateDir = path.join(stageDistDir, entry);
+    const stat = yield* fs.stat(candidateDir).pipe(Effect.catch(() => Effect.succeed(null)));
+    if (!stat || stat.type !== "Directory") continue;
+
+    const executablePath = path.join(candidateDir, `${productName}.exe`);
+    if (!(yield* fs.exists(executablePath))) continue;
+
+    return {
+      appDir: candidateDir,
+      executablePath,
+    } as const;
+  }
+
+  return yield* new BuildScriptError({
+    message: `Could not find a Windows unpacked app directory in ${stageDistDir}.`,
+  });
+});
 
 function validateBundledClientAssets(clientDir: string) {
   return Effect.gen(function* () {
@@ -449,9 +605,13 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   signed: boolean,
 ) {
   const buildConfig: Record<string, unknown> = {
-    appId: "com.t3tools.t3code",
+    appId: "com.t3tools.t3code.app",
     productName,
     artifactName: "T3-Code-${version}-${arch}.${ext}",
+    // Runtime deps already install their own prebuilt binaries; forcing
+    // electron-builder to rebuild native modules makes Windows packaging depend
+    // on node-gyp's Visual Studio version matrix.
+    npmRebuild: false,
     directories: {
       buildResources: "apps/desktop/resources",
     },
@@ -481,6 +641,9 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     const winConfig: Record<string, unknown> = {
       target: [target],
       icon: "icon.ico",
+      // Unsigned Windows builds patch the unpacked executable with rcedit
+      // before NSIS packaging; signed builds keep electron-builder's native flow.
+      signAndEditExecutable: signed,
     };
     if (signed) {
       winConfig.azureSignOptions = yield* AzureTrustedSigningOptionsConfig;
@@ -561,6 +724,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   });
 
   const appVersion = options.version ?? serverPackageJson.version;
+  const productName = desktopPackageJson.productName ?? "T3 Code";
   const commitHash = resolveGitCommitHash(repoRoot);
   const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
   const stageRoot = yield* mkdir({
@@ -579,12 +743,11 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   if (!options.skipBuild) {
     yield* Effect.log("[desktop-artifact] Building desktop/server/web artifacts...");
     yield* runCommand(
-      ChildProcess.make({
+      ChildProcess.make(BUN_CMD, ["run", "build:desktop"], {
         cwd: repoRoot,
+        ...WIN_SHELL,
         ...commandOutputOptions(options.verbose),
-        // Windows needs shell mode to resolve .cmd shims (e.g. bun.cmd).
-        shell: process.platform === "win32",
-      })`bun run build:desktop`,
+      }),
     );
   }
 
@@ -626,7 +789,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     build: yield* createBuildConfig(
       options.platform,
       options.target,
-      desktopPackageJson.productName ?? "T3 Code",
+      productName,
       options.signed,
     ),
     dependencies: {
@@ -643,12 +806,11 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 
   yield* Effect.log("[desktop-artifact] Installing staged production dependencies...");
   yield* runCommand(
-    ChildProcess.make({
+    ChildProcess.make(BUN_CMD, ["install", "--production"], {
       cwd: stageAppDir,
+      ...WIN_SHELL,
       ...commandOutputOptions(options.verbose),
-      // Windows needs shell mode to resolve .cmd shims (e.g. bun.cmd).
-      shell: process.platform === "win32",
-    })`bun install --production`,
+    }),
   );
 
   const buildEnv: NodeJS.ProcessEnv = {
@@ -674,24 +836,74 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       buildEnv.PYTHON = python;
       buildEnv.npm_config_python = python;
     }
-    buildEnv.npm_config_msvs_version = buildEnv.npm_config_msvs_version ?? "2022";
-    buildEnv.GYP_MSVS_VERSION = buildEnv.GYP_MSVS_VERSION ?? "2022";
+
+    const visualStudioCompatibilityEnv = resolveVisualStudioCompatibilityEnv();
+    if (visualStudioCompatibilityEnv) {
+      Object.assign(buildEnv, visualStudioCompatibilityEnv);
+    }
+
+    buildEnv.npm_config_msvs_version =
+      buildEnv.npm_config_msvs_version ?? visualStudioCompatibilityEnv?.npm_config_msvs_version ?? "2022";
+    buildEnv.GYP_MSVS_VERSION =
+      buildEnv.GYP_MSVS_VERSION ?? visualStudioCompatibilityEnv?.GYP_MSVS_VERSION ?? "2022";
   }
 
   yield* Effect.log(
     `[desktop-artifact] Building ${options.platform}/${options.target} (arch=${options.arch}, version=${appVersion})...`,
   );
-  yield* runCommand(
-    ChildProcess.make({
-      cwd: stageAppDir,
-      env: buildEnv,
-      ...commandOutputOptions(options.verbose),
-      // Windows needs shell mode to resolve .cmd shims.
-      shell: process.platform === "win32",
-    })`bunx electron-builder ${platformConfig.cliFlag} --${options.arch} --publish never`,
-  );
-
   const stageDistDir = path.join(stageAppDir, "dist");
+  if (options.platform === "win" && !options.signed) {
+    yield* runCommand(
+      ChildProcess.make(
+        BUNX_CMD,
+        ["electron-builder", platformConfig.cliFlag, `--${options.arch}`, "--dir", "--publish", "never"],
+        {
+          cwd: stageAppDir,
+          env: buildEnv,
+          ...WIN_SHELL,
+          ...commandOutputOptions(options.verbose),
+        },
+      ),
+    );
+
+    const unpackedApp = yield* resolveWindowsUnpackedAppDir(stageDistDir, productName);
+    yield* Effect.log("[desktop-artifact] Patching Windows executable icon...");
+    yield* patchWindowsExecutableIcon(
+      unpackedApp.executablePath,
+      path.join(stageResourcesDir, "icon.ico"),
+    );
+
+    yield* runCommand(
+      ChildProcess.make(
+        BUNX_CMD,
+        [
+          "electron-builder",
+          platformConfig.cliFlag,
+          `--${options.arch}`,
+          "--prepackaged",
+          unpackedApp.appDir,
+          "--publish",
+          "never",
+        ],
+        {
+          cwd: stageAppDir,
+          env: buildEnv,
+          ...WIN_SHELL,
+          ...commandOutputOptions(options.verbose),
+        },
+      ),
+    );
+  } else {
+    yield* runCommand(
+      ChildProcess.make(BUNX_CMD, ["electron-builder", platformConfig.cliFlag, `--${options.arch}`, "--publish", "never"], {
+        cwd: stageAppDir,
+        env: buildEnv,
+        ...WIN_SHELL,
+        ...commandOutputOptions(options.verbose),
+      }),
+    );
+  }
+
   if (!(yield* fs.exists(stageDistDir))) {
     return yield* new BuildScriptError({
       message: `Build completed but dist directory was not found at ${stageDistDir}`,

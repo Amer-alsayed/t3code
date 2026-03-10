@@ -4,6 +4,9 @@
 
 @theme inline {
   --animate-skeleton: skeleton 2s -1s infinite linear;
+  --motion-fast: 140ms cubic-bezier(0.2, 0, 0, 1);
+  --motion-smooth: 220ms cubic-bezier(0.2, 0, 0, 1);
+  --motion-emphasized: 320ms cubic-bezier(0.16, 1, 0.3, 1);
   --color-warning-foreground: var(--warning-foreground);
   --color-warning: var(--warning);
   --color-success-foreground: var(--success-foreground);
@@ -35,21 +38,111 @@
   --radius-xl: calc(var(--radius) + 4px);
   --radius-2xl: calc(var(--radius) + 8px);
   --radius-3xl: calc(var(--radius) + 12px);
+  --radius-3xl: calc(var(--radius) + 12px);
   --radius-4xl: calc(var(--radius) + 16px);
+  --animate-fluid-fade-in: fluid-fade-in 400ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
   @keyframes skeleton {
     to {
       background-position: -200% 0;
+    }
+  }
+  @keyframes fluid-fade-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
     }
   }
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border;
+  }
+  :not(.dark) * {
+    @apply outline-ring/50;
+  }
+  .dark * {
+    @apply outline-transparent;
   }
   body {
-    @apply bg-background text-foreground relative;
+    @apply bg-card text-foreground relative;
+    text-rendering: optimizeLegibility;
   }
+  html {
+    background-color: var(--card);
+  }
+  /* Ensure the text cursor (caret) is always visible in light mode */
+  :not(.dark) input,
+  :not(.dark) textarea,
+  :not(.dark) [contenteditable="true"],
+  :not(.dark) [role="textbox"] {
+    caret-color: var(--foreground);
+  }
+  a, button, input, select, textarea, [role="button"], [role="tab"], [role="menuitem"], [role="dialog"], .toggle {
+    transition:
+      color var(--motion-fast),
+      background-color var(--motion-fast),
+      border-color var(--motion-fast),
+      opacity var(--motion-fast),
+      box-shadow var(--motion-fast),
+      transform var(--motion-fast);
+  }
+}
+
+/* Codex-style rounded content panel */
+.content-panel {
+  border-top-left-radius: 24px;
+  overflow: hidden;
+  contain: layout paint style;
+  transition:
+    border-top-left-radius var(--motion-smooth),
+    transform var(--motion-smooth),
+    opacity var(--motion-smooth);
+  will-change: border-top-left-radius, transform;
+}
+
+[data-sidebar-collapsed="true"] .content-panel {
+  border-top-left-radius: 0px;
+}
+
+[data-app-shell="electron"] body {
+  background: var(--background);
+}
+
+.dark [data-app-shell="electron"] body,
+[data-app-shell="electron"] .dark body {
+  background: #000;
+}
+
+[data-app-shell="electron"] .content-panel {
+  border-top-left-radius: 24px;
+  border-top-right-radius: 0;
+  transition: none;
+  will-change: auto;
+}
+
+[data-app-shell="electron"] .chat-layout-shell {
+  transition: none;
+  will-change: auto;
+}
+
+.chat-layout-shell {
+  transition:
+    transform var(--motion-smooth),
+    opacity var(--motion-smooth);
+  will-change: transform;
+}
+
+[data-sidebar-collapsed="false"] .chat-layout-shell {
+  transform: translate3d(0, 0, 0);
+}
+
+[data-sidebar-collapsed="true"] .chat-layout-shell {
+  transform: translate3d(0, 0, 0);
 }
 
 /* Suppress all transitions during theme changes */
@@ -63,24 +156,24 @@
 
 :root {
   color-scheme: light;
-  --radius: 0.625rem;
-  --background: var(--color-white);
-  --foreground: var(--color-neutral-800);
-  --card: var(--color-white);
-  --card-foreground: var(--color-neutral-800);
-  --popover: var(--color-white);
-  --popover-foreground: var(--color-neutral-800);
+  --radius: 0.875rem;
+  --background: #ffffff;
+  --foreground: var(--color-neutral-950);
+  --card: #f9fafb;
+  --card-foreground: var(--color-neutral-950);
+  --popover: #ffffff;
+  --popover-foreground: var(--color-neutral-950);
   --primary: oklch(0.488 0.217 264);
   --primary-foreground: var(--color-white);
-  --secondary: --alpha(var(--color-black) / 4%);
-  --secondary-foreground: var(--color-neutral-800);
+  --secondary: --alpha(var(--color-black) / 5%);
+  --secondary-foreground: var(--color-neutral-900);
   --muted: --alpha(var(--color-black) / 4%);
-  --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-black));
-  --accent: --alpha(var(--color-black) / 4%);
-  --accent-foreground: var(--color-neutral-800);
+  --muted-foreground: var(--color-neutral-700);
+  --accent: --alpha(var(--color-black) / 5%);
+  --accent-foreground: var(--color-neutral-900);
   --destructive: var(--color-red-500);
-  --border: --alpha(var(--color-black) / 8%);
-  --input: --alpha(var(--color-black) / 10%);
+  --border: --alpha(var(--color-black) / 12%);
+  --input: --alpha(var(--color-black) / 14%);
   --ring: oklch(0.488 0.217 264);
   --destructive-foreground: var(--color-red-700);
   --info: var(--color-blue-500);
@@ -92,24 +185,24 @@
 
   @variant dark {
     color-scheme: dark;
-    --background: color-mix(in srgb, var(--color-neutral-950) 95%, var(--color-white));
-    --foreground: var(--color-neutral-100);
-    --card: color-mix(in srgb, var(--background) 98%, var(--color-white));
-    --card-foreground: var(--color-neutral-100);
-    --popover: color-mix(in srgb, var(--background) 98%, var(--color-white));
-    --popover-foreground: var(--color-neutral-100);
+    --background: #000000;
+    --foreground: var(--color-white);
+    --card: #181818;
+    --card-foreground: var(--color-white);
+    --popover: #181818;
+    --popover-foreground: var(--color-white);
     --primary: oklch(0.588 0.217 264);
     --primary-foreground: var(--color-white);
-    --secondary: --alpha(var(--color-white) / 4%);
-    --secondary-foreground: var(--color-neutral-100);
-    --muted: --alpha(var(--color-white) / 4%);
-    --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white));
-    --accent: --alpha(var(--color-white) / 4%);
-    --accent-foreground: var(--color-neutral-100);
+    --secondary: --alpha(var(--color-white) / 8%);
+    --secondary-foreground: var(--color-white);
+    --muted: --alpha(var(--color-white) / 6%);
+    --muted-foreground: var(--color-neutral-300);
+    --accent: --alpha(var(--color-white) / 8%);
+    --accent-foreground: var(--color-white);
     --destructive: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
-    --border: --alpha(var(--color-white) / 6%);
-    --input: --alpha(var(--color-white) / 8%);
-    --ring: oklch(0.588 0.217 264);
+    --border: --alpha(var(--color-white) / 8%);
+    --input: --alpha(var(--color-white) / 10%);
+    --ring: --alpha(var(--color-white) / 16%);
     --destructive-foreground: var(--color-red-400);
     --info: var(--color-blue-500);
     --info-foreground: var(--color-blue-400);
@@ -156,6 +249,10 @@ body::after {
   background-size: 256px 256px;
 }
 
+.dark body::after {
+  display: none;
+}
+
 pre,
 code,
 textarea,
@@ -186,20 +283,17 @@ input {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.15);
+  background: color-mix(in srgb, var(--foreground) 20%, transparent);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.25);
+  background: color-mix(in srgb, var(--foreground) 30%, transparent);
 }
 
-.dark ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.dark ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.18);
+/* Hide native scrollbar for Base UI custom scroll areas */
+[data-slot="scroll-area-viewport"]::-webkit-scrollbar {
+  display: none;
 }
 
 .turn-chip-strip {
@@ -210,6 +304,11 @@ input {
 
 .turn-chip-strip::-webkit-scrollbar {
   display: none;
+}
+
+.sidebar-thread-list {
+  content-visibility: auto;
+  contain-intrinsic-size: 320px;
 }
 
 /* Terminal drawer scrollbar parity with chat */
@@ -244,6 +343,7 @@ label:has(> select#reasoning-effort) select {
   min-width: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
+  line-height: 1.75;
 }
 
 .chat-markdown > :first-child {
@@ -259,8 +359,37 @@ label:has(> select#reasoning-effort) select {
 .chat-markdown ol,
 .chat-markdown blockquote,
 .chat-markdown pre,
-.chat-markdown table {
+.chat-markdown table,
+.chat-markdown hr {
   margin: 0.65rem 0;
+}
+
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3,
+.chat-markdown h4 {
+  margin: 1rem 0 0.45rem;
+  color: var(--foreground);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+.chat-markdown h1 {
+  font-size: 1.35rem;
+}
+
+.chat-markdown h2 {
+  font-size: 1.15rem;
+}
+
+.chat-markdown h3 {
+  font-size: 1rem;
+}
+
+.chat-markdown hr {
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
 }
 
 .chat-markdown ul {
@@ -307,6 +436,10 @@ label:has(> select#reasoning-effort) select {
   border-left: 2px solid var(--border);
   padding-left: 0.8rem;
   color: var(--muted-foreground);
+  background: color-mix(in srgb, var(--muted) 72%, transparent);
+  border-radius: 0 0.75rem 0.75rem 0;
+  padding-top: 0.65rem;
+  padding-bottom: 0.65rem;
 }
 
 .chat-markdown :not(pre) > code {
@@ -381,9 +514,22 @@ label:has(> select#reasoning-effort) select {
   background: color-mix(in srgb, var(--muted) 78%, var(--background)) !important;
 }
 
+.chat-markdown .katex {
+  font-size: 1.02em;
+}
+
+.chat-markdown .katex-display {
+  margin: 1rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.35rem 0.1rem;
+}
+
 .chat-markdown table {
   width: 100%;
   border-collapse: collapse;
+  overflow: hidden;
+  border-radius: 0.75rem;
 }
 
 .chat-markdown th,
@@ -393,9 +539,16 @@ label:has(> select#reasoning-effort) select {
   text-align: left;
 }
 
+.chat-markdown th {
+  background: color-mix(in srgb, var(--muted) 82%, transparent);
+  color: var(--foreground);
+  font-weight: 600;
+}
+
 /* Diffs theme bridge (match diff surfaces to app palette) */
 .diff-panel-viewport {
   background: color-mix(in srgb, var(--background) 94%, var(--card));
+  contain: layout paint style;
 }
 
 .diff-render-file {

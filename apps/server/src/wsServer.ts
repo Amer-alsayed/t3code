@@ -26,7 +26,6 @@ import {
   WebSocketRequest,
   WsPush,
   WsResponse,
-  ServerProviderStatus,
 } from "@t3tools/contracts";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import {
@@ -99,7 +98,8 @@ export interface ServerShape {
  */
 export class Server extends ServiceMap.Service<Server, ServerShape>()("t3/wsServer/Server") {}
 
-const isServerNotRunningError = (error: Error): boolean => {
+const isServerNotRunningError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) return false;
   const maybeCode = (error as NodeJS.ErrnoException).code;
   return (
     maybeCode === "ERR_SERVER_NOT_RUNNING" || error.message.toLowerCase().includes("not running")
@@ -195,6 +195,13 @@ function stripRequestTag<T extends { _tag: string }>(body: T) {
   return Struct.omit(body, ["_tag"]);
 }
 
+function messageFromCause(cause: Cause.Cause<unknown>): string {
+  const squashed = Cause.squash(cause);
+  const message =
+    squashed instanceof Error ? squashed.message.trim() : String(squashed).trim();
+  return message.length > 0 ? message : Cause.pretty(cause);
+}
+
 export type ServerCoreRuntimeServices =
   | OrchestrationEngineService
   | ProjectionSnapshotQuery
@@ -261,6 +268,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     ),
   );
 
+  const providerStatuses = yield* providerHealth.getStatuses;
+
   const clients = yield* Ref.make(new Set<WebSocket>());
   const logger = createLogger("ws");
 
@@ -315,6 +324,45 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       return normalizedWorkspaceRoot;
     });
 
+    const validateExistingWorkspacePath = Effect.fnUntraced(function* (workspacePath: string) {
+      yield* normalizeProjectWorkspaceRoot(workspacePath);
+    });
+
+    const validateProjectWorkspaceTargets = Effect.fnUntraced(function* (projectId: ProjectId) {
+      const snapshot = yield* projectionReadModelQuery.getSnapshot();
+      const project = snapshot.projects.find(
+        (entry) => entry.id === projectId && entry.deletedAt === null,
+      );
+      if (!project) {
+        return yield* new RouteRequestError({
+          message: `Project does not exist: ${projectId}`,
+        });
+      }
+      yield* validateExistingWorkspacePath(project.workspaceRoot);
+    });
+
+    const validateThreadWorkspaceTargets = Effect.fnUntraced(function* (threadId: ThreadId) {
+      const snapshot = yield* projectionReadModelQuery.getSnapshot();
+      const thread = snapshot.threads.find((entry) => entry.id === threadId && entry.deletedAt === null);
+      if (!thread) {
+        return yield* new RouteRequestError({
+          message: `Thread does not exist: ${threadId}`,
+        });
+      }
+      const project = snapshot.projects.find(
+        (entry) => entry.id === thread.projectId && entry.deletedAt === null,
+      );
+      if (!project) {
+        return yield* new RouteRequestError({
+          message: `Project does not exist for thread: ${threadId}`,
+        });
+      }
+      yield* validateExistingWorkspacePath(project.workspaceRoot);
+      if (thread.worktreePath) {
+        yield* validateExistingWorkspacePath(thread.worktreePath);
+      }
+    });
+
     if (input.command.type === "project.create") {
       return {
         ...input.command,
@@ -322,7 +370,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       } satisfies OrchestrationCommand;
     }
 
-    if (input.command.type === "project.meta.update" && input.command.workspaceRoot !== undefined) {
+    if (input.command.type === "thread.create") {
+      yield* validateProjectWorkspaceTargets(input.command.projectId);
+      return input.command as OrchestrationCommand;
+    }
+
+    if (
+      input.command.type === "project.meta.update" &&
+      input.command.workspaceRoot !== undefined
+    ) {
       return {
         ...input.command,
         workspaceRoot: yield* normalizeProjectWorkspaceRoot(input.command.workspaceRoot),
@@ -333,6 +389,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       return input.command as OrchestrationCommand;
     }
     const turnStartCommand = input.command;
+    yield* validateThreadWorkspaceTargets(turnStartCommand.threadId);
 
     const normalizedAttachments = yield* Effect.forEach(
       turnStartCommand.message.attachments,
@@ -605,23 +662,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const subscriptionsScope = yield* Scope.make("sequential");
   yield* Effect.addFinalizer(() => Scope.close(subscriptionsScope, Exit.void));
 
-  // Push updated provider statuses to connected clients once background health checks finish.
-  let providers: ReadonlyArray<ServerProviderStatus> = [];
-  yield* providerHealth.getStatuses.pipe(
-    Effect.flatMap((statuses) => {
-      providers = statuses;
-      return broadcastPush({
-        type: "push",
-        channel: WS_CHANNELS.serverConfigUpdated,
-        data: {
-          issues: [],
-          providers: statuses,
-        },
-      });
-    }),
-    Effect.forkIn(subscriptionsScope),
-  );
-
   yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
     broadcastPush({
       type: "push",
@@ -636,7 +676,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       channel: WS_CHANNELS.serverConfigUpdated,
       data: {
         issues: event.issues,
-        providers,
+        providers: providerStatuses,
       },
     }),
   ).pipe(Effect.forkIn(subscriptionsScope));
@@ -782,16 +822,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           relativePath: body.relativePath,
           path,
         });
-        yield* fileSystem
-          .makeDirectory(path.dirname(target.absolutePath), { recursive: true })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new RouteRequestError({
-                  message: `Failed to prepare workspace path: ${String(cause)}`,
-                }),
-            ),
-          );
+        yield* fileSystem.makeDirectory(path.dirname(target.absolutePath), { recursive: true }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new RouteRequestError({
+                message: `Failed to prepare workspace path: ${String(cause)}`,
+              }),
+          ),
+        );
         yield* fileSystem.writeFileString(target.absolutePath, body.contents).pipe(
           Effect.mapError(
             (cause) =>
@@ -821,16 +859,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case WS_METHODS.gitRunStackedAction: {
         const body = stripRequestTag(request.body);
         return yield* gitManager.runStackedAction(body);
-      }
-
-      case WS_METHODS.gitResolvePullRequest: {
-        const body = stripRequestTag(request.body);
-        return yield* gitManager.resolvePullRequest(body);
-      }
-
-      case WS_METHODS.gitPreparePullRequestThread: {
-        const body = stripRequestTag(request.body);
-        return yield* gitManager.preparePullRequestThread(body);
       }
 
       case WS_METHODS.gitListBranches: {
@@ -900,7 +928,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           keybindingsConfigPath,
           keybindings: keybindingsConfig.keybindings,
           issues: keybindingsConfig.issues,
-          providers,
+          providers: providerStatuses,
           availableEditors,
         };
 
@@ -936,7 +964,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     if (request._tag === "Failure") {
       const errorResponse = yield* encodeResponse({
         id: "unknown",
-        error: { message: `Invalid request format: ${Cause.pretty(request.cause)}` },
+        error: { message: `Invalid request format: ${messageFromCause(request.cause)}` },
       });
       ws.send(errorResponse);
       return;
@@ -946,7 +974,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     if (result._tag === "Failure") {
       const errorResponse = yield* encodeResponse({
         id: request.value.id,
-        error: { message: Cause.pretty(result.cause) },
+        error: { message: messageFromCause(result.cause) },
       });
       ws.send(errorResponse);
       return;

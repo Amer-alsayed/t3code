@@ -91,9 +91,7 @@ describe("buildTurnDiffTree", () => {
   });
 
   it("normalizes file paths with windows separators", () => {
-    const tree = buildTurnDiffTree([
-      { path: "apps\\web\\src\\index.ts", additions: 2, deletions: 1 },
-    ]);
+    const tree = buildTurnDiffTree([{ path: "apps\\web\\src\\index.ts", additions: 2, deletions: 1 }]);
 
     expect(tree).toEqual([
       {
@@ -159,8 +157,7 @@ describe("buildTurnDiffTree", () => {
 
     expect(tree).toHaveLength(2);
     const directoryNodes = tree.filter(
-      (node): node is Extract<(typeof tree)[number], { kind: "directory" }> =>
-        node.kind === "directory",
+      (node): node is Extract<(typeof tree)[number], { kind: "directory" }> => node.kind === "directory",
     );
     expect(directoryNodes.map((node) => node.name).toSorted()).toEqual([" a", "a"]);
     expect(directoryNodes.map((node) => node.path).toSorted()).toEqual([" a", "a"]);

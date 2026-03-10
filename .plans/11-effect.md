@@ -1,3 +1,5 @@
+
+
 PR 1: Service contracts + error taxonomy
 Add ProviderService, CodexService, CheckpointStore as Context.Tag service defs.
 Add typed Schema.TaggedError hierarchies for all 3 services (cause: Schema.optional(Schema.Defect) on each).

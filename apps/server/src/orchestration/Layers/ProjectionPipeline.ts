@@ -78,8 +78,9 @@ interface AttachmentSideEffects {
 }
 
 const materializeAttachmentsForProjection = Effect.fn(
-  (input: { readonly attachments: ReadonlyArray<ChatAttachment> }) =>
-    Effect.succeed(input.attachments.length === 0 ? [] : input.attachments),
+  (input: {
+    readonly attachments: ReadonlyArray<ChatAttachment>;
+  }) => Effect.succeed(input.attachments.length === 0 ? [] : input.attachments),
 );
 
 function extractActivityRequestId(payload: unknown): ApprovalRequestId | null {
@@ -335,6 +336,7 @@ const runAttachmentSideEffects = Effect.fn(function* (sideEffects: AttachmentSid
     },
     { concurrency: 1 },
   );
+
 });
 
 const makeOrchestrationProjectionPipeline = Effect.gen(function* () {

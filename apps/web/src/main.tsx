@@ -1,8 +1,8 @@
-import React from "react";
 import ReactDOM from "react-dom/client";
 import { RouterProvider } from "@tanstack/react-router";
 import { createHashHistory, createBrowserHistory } from "@tanstack/react-router";
 
+import "katex/dist/katex.min.css";
 import "@xterm/xterm/css/xterm.css";
 import "./index.css";
 
@@ -15,9 +15,8 @@ const history = isElectron ? createHashHistory() : createBrowserHistory();
 const router = getRouter(history);
 
 document.title = APP_DISPLAY_NAME;
+document.documentElement.dataset.appShell = isElectron ? "electron" : "web";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <RouterProvider router={router} />
-  </React.StrictMode>,
+  <RouterProvider router={router} />,
 );

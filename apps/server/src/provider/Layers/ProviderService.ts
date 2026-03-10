@@ -86,28 +86,13 @@ function toRuntimeStatus(session: ProviderSession): "starting" | "running" | "st
   }
 }
 
-function toRuntimePayloadFromSession(
-  session: ProviderSession,
-  extra?: { readonly providerOptions?: unknown },
-): Record<string, unknown> {
+function toRuntimePayloadFromSession(session: ProviderSession): Record<string, unknown> {
   return {
     cwd: session.cwd ?? null,
     model: session.model ?? null,
     activeTurnId: session.activeTurnId ?? null,
     lastError: session.lastError ?? null,
-    ...(extra?.providerOptions !== undefined ? { providerOptions: extra.providerOptions } : {}),
   };
-}
-
-function readPersistedProviderOptions(
-  runtimePayload: ProviderRuntimeBinding["runtimePayload"],
-): Record<string, unknown> | undefined {
-  if (!runtimePayload || typeof runtimePayload !== "object" || Array.isArray(runtimePayload)) {
-    return undefined;
-  }
-  const raw = "providerOptions" in runtimePayload ? runtimePayload.providerOptions : undefined;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
-  return raw as Record<string, unknown>;
 }
 
 function readPersistedCwd(
@@ -141,7 +126,9 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
       Effect.succeed(event).pipe(
         Effect.tap((canonicalEvent) =>
-          canonicalEventLogger ? canonicalEventLogger.write(canonicalEvent, null) : Effect.void,
+          canonicalEventLogger
+            ? canonicalEventLogger.write(canonicalEvent, null)
+            : Effect.void,
         ),
         Effect.flatMap((canonicalEvent) => PubSub.publish(runtimeEventPubSub, canonicalEvent)),
         Effect.asVoid,
@@ -150,7 +137,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     const upsertSessionBinding = (
       session: ProviderSession,
       threadId: ThreadId,
-      extra?: { readonly providerOptions?: unknown },
     ) =>
       directory.upsert({
         threadId,
@@ -158,7 +144,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         runtimeMode: session.runtimeMode,
         status: toRuntimeStatus(session),
         ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
-        runtimePayload: toRuntimePayloadFromSession(session, extra),
+        runtimePayload: toRuntimePayloadFromSession(session),
       });
 
     const providers = yield* registry.listProviders();
@@ -191,9 +177,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         const hasActiveSession = yield* adapter.hasSession(input.binding.threadId);
         if (hasActiveSession) {
           const activeSessions = yield* adapter.listSessions();
-          const existing = activeSessions.find(
-            (session) => session.threadId === input.binding.threadId,
-          );
+          const existing = activeSessions.find((session) => session.threadId === input.binding.threadId);
           if (existing) {
             yield* upsertSessionBinding(existing, input.binding.threadId);
             yield* analytics.record("provider.session.recovered", {
@@ -213,13 +197,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         }
 
         const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
-        const persistedProviderOptions = readPersistedProviderOptions(input.binding.runtimePayload);
 
         const resumed = yield* adapter.startSession({
           threadId: input.binding.threadId,
           provider: input.binding.provider,
           ...(persistedCwd ? { cwd: persistedCwd } : {}),
-          ...(persistedProviderOptions ? { providerOptions: persistedProviderOptions } : {}),
           ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
           runtimeMode: input.binding.runtimeMode ?? "full-access",
         });
@@ -291,11 +273,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           );
         }
 
-        yield* upsertSessionBinding(session, threadId, {
-          ...(input.providerOptions !== undefined
-            ? { providerOptions: input.providerOptions }
-            : {}),
-        });
+        yield* upsertSessionBinding(session, threadId);
         yield* analytics.record("provider.session.started", {
           provider: session.provider,
           runtimeMode: input.runtimeMode,
@@ -427,23 +405,23 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
 
     const listSessions: ProviderServiceShape["listSessions"] = () =>
       Effect.gen(function* () {
-        const sessionsByProvider = yield* Effect.forEach(adapters, (adapter) =>
-          adapter.listSessions(),
-        );
+        const sessionsByProvider = yield* Effect.forEach(adapters, (adapter) => adapter.listSessions());
         const activeSessions = sessionsByProvider.flatMap((sessions) => sessions);
-        const persistedBindings = yield* directory.listThreadIds().pipe(
-          Effect.flatMap((threadIds) =>
-            Effect.forEach(
-              threadIds,
-              (threadId) =>
-                directory
-                  .getBinding(threadId)
-                  .pipe(Effect.orElseSucceed(() => Option.none<ProviderRuntimeBinding>())),
-              { concurrency: "unbounded" },
+        const persistedBindings = yield* directory
+          .listThreadIds()
+          .pipe(
+            Effect.flatMap((threadIds) =>
+              Effect.forEach(
+                threadIds,
+                (threadId) =>
+                  directory.getBinding(threadId).pipe(
+                    Effect.orElseSucceed(() => Option.none<ProviderRuntimeBinding>()),
+                  ),
+                { concurrency: "unbounded" },
+              ),
             ),
-          ),
-          Effect.orElseSucceed(() => [] as Array<Option.Option<ProviderRuntimeBinding>>),
-        );
+            Effect.orElseSucceed(() => [] as Array<Option.Option<ProviderRuntimeBinding>>),
+          );
         const bindingsByThreadId = new Map<ThreadId, ProviderRuntimeBinding>();
         for (const bindingOption of persistedBindings) {
           const binding = Option.getOrUndefined(bindingOption);

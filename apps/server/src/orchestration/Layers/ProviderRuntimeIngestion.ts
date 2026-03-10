@@ -155,6 +155,36 @@ function orchestrationSessionStatusFromRuntimeState(
   }
 }
 
+function statusFromLifecycleEvent(
+  event:
+    | Extract<ProviderRuntimeEvent, { type: "session.state.changed" }>
+    | Extract<ProviderRuntimeEvent, { type: "turn.started" }>
+    | Extract<ProviderRuntimeEvent, { type: "session.exited" }>
+    | Extract<ProviderRuntimeEvent, { type: "turn.completed" }>
+    | Extract<ProviderRuntimeEvent, { type: "session.started" }>
+    | Extract<ProviderRuntimeEvent, { type: "thread.started" }>,
+  activeTurnId: string | null,
+): "starting" | "running" | "ready" | "interrupted" | "stopped" | "error" {
+  switch (event.type) {
+    case "session.state.changed":
+      // Some providers emit a "ready" heartbeat while a turn is still actively running.
+      // Preserve the run lock until the active turn closes.
+      if (activeTurnId !== null && event.payload.state === "ready") {
+        return "running";
+      }
+      return orchestrationSessionStatusFromRuntimeState(event.payload.state);
+    case "turn.started":
+      return "running";
+    case "session.exited":
+      return "stopped";
+    case "turn.completed":
+      return runtimeTurnState(event) === "failed" ? "error" : "ready";
+    case "session.started":
+    case "thread.started":
+      return activeTurnId !== null ? "running" : "ready";
+  }
+}
+
 function requestKindFromCanonicalRequestType(
   requestType: string | undefined,
 ): "command" | "file-read" | "file-change" | undefined {
@@ -210,9 +240,9 @@ function runtimeEventToActivities(
               ? "Command approval requested"
               : requestKind === "file-read"
                 ? "File-read approval requested"
-                : requestKind === "file-change"
-                  ? "File-change approval requested"
-                  : "Approval requested",
+              : requestKind === "file-change"
+                ? "File-change approval requested"
+                : "Approval requested",
           payload: {
             requestId: toApprovalRequestId(event.requestId),
             ...(requestKind ? { requestKind } : {}),
@@ -298,9 +328,7 @@ function runtimeEventToActivities(
           summary: "Plan updated",
           payload: {
             plan: event.payload.plan,
-            ...(event.payload.explanation !== undefined
-              ? { explanation: event.payload.explanation }
-              : {}),
+            ...(event.payload.explanation !== undefined ? { explanation: event.payload.explanation } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -360,9 +388,7 @@ function runtimeEventToActivities(
           payload: {
             taskId: event.payload.taskId,
             ...(event.payload.taskType ? { taskType: event.payload.taskType } : {}),
-            ...(event.payload.description
-              ? { detail: truncateDetail(event.payload.description) }
-              : {}),
+            ...(event.payload.description ? { detail: truncateDetail(event.payload.description) } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -529,7 +555,11 @@ const make = Effect.gen(function* () {
     return isGitRepository(workspaceCwd);
   });
 
-  const rememberAssistantMessageId = (threadId: ThreadId, turnId: TurnId, messageId: MessageId) =>
+  const rememberAssistantMessageId = (
+    threadId: ThreadId,
+    turnId: TurnId,
+    messageId: MessageId,
+  ) =>
     Cache.getOption(turnMessageIdsByTurnKey, providerTurnKey(threadId, turnId)).pipe(
       Effect.flatMap((existingIds) =>
         Cache.set(
@@ -547,7 +577,11 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const forgetAssistantMessageId = (threadId: ThreadId, turnId: TurnId, messageId: MessageId) =>
+  const forgetAssistantMessageId = (
+    threadId: ThreadId,
+    turnId: TurnId,
+    messageId: MessageId,
+  ) =>
     Cache.getOption(turnMessageIdsByTurnKey, providerTurnKey(threadId, turnId)).pipe(
       Effect.flatMap((existingIds) =>
         Option.match(existingIds, {
@@ -612,8 +646,7 @@ const make = Effect.gen(function* () {
         const existing = Option.getOrUndefined(existingEntry);
         return Cache.set(bufferedProposedPlanById, planId, {
           text: `${existing?.text ?? ""}${delta}`,
-          createdAt:
-            existing?.createdAt && existing.createdAt.length > 0 ? existing.createdAt : createdAt,
+          createdAt: existing?.createdAt && existing.createdAt.length > 0 ? existing.createdAt : createdAt,
         });
       }),
     );
@@ -630,8 +663,7 @@ const make = Effect.gen(function* () {
   const clearBufferedProposedPlan = (planId: string) =>
     Cache.invalidate(bufferedProposedPlanById, planId);
 
-  const clearAssistantMessageState = (messageId: MessageId) =>
-    clearBufferedAssistantText(messageId);
+  const clearAssistantMessageState = (messageId: MessageId) => clearBufferedAssistantText(messageId);
 
   const finalizeAssistantMessage = (input: {
     event: ProviderRuntimeEvent;
@@ -837,31 +869,15 @@ const make = Effect.gen(function* () {
             : event.type === "turn.completed" || event.type === "session.exited"
               ? null
               : activeTurnId;
-        const status = (() => {
-          switch (event.type) {
-            case "session.state.changed":
-              return orchestrationSessionStatusFromRuntimeState(event.payload.state);
-            case "turn.started":
-              return "running";
-            case "session.exited":
-              return "stopped";
-            case "turn.completed":
-              return runtimeTurnState(event) === "failed" ? "error" : "ready";
-            case "session.started":
-            case "thread.started":
-              // Provider thread/session start notifications can arrive during an
-              // active turn; preserve turn-running state in that case.
-              return activeTurnId !== null ? "running" : "ready";
-          }
-        })();
+        const status = statusFromLifecycleEvent(event, activeTurnId);
         const lastError =
           event.type === "session.state.changed" && event.payload.state === "error"
             ? (event.payload.reason ?? thread.session?.lastError ?? "Provider session error")
             : event.type === "turn.completed" && runtimeTurnState(event) === "failed"
               ? (runtimeTurnErrorMessage(event) ?? thread.session?.lastError ?? "Turn failed")
               : status === "ready"
-                ? null
-                : (thread.session?.lastError ?? null);
+              ? null
+              : (thread.session?.lastError ?? null);
 
         if (shouldApplyThreadLifecycle) {
           yield* orchestrationEngine.dispatch({
@@ -933,9 +949,7 @@ const make = Effect.gen(function* () {
       const assistantCompletion =
         event.type === "item.completed" && event.payload.itemType === "assistant_message"
           ? {
-              messageId: MessageId.makeUnsafe(
-                `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
-              ),
+              messageId: MessageId.makeUnsafe(`assistant:${event.itemId ?? event.turnId ?? event.eventId}`),
               fallbackText: event.payload.detail,
             }
           : undefined;
@@ -951,11 +965,6 @@ const make = Effect.gen(function* () {
       if (assistantCompletion) {
         const assistantMessageId = assistantCompletion.messageId;
         const turnId = toTurnId(event.turnId);
-        const existingAssistantMessage = thread.messages.find(
-          (entry) => entry.id === assistantMessageId,
-        );
-        const shouldApplyFallbackCompletionText =
-          !existingAssistantMessage || existingAssistantMessage.text.length === 0;
         if (turnId) {
           yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
         }
@@ -968,7 +977,7 @@ const make = Effect.gen(function* () {
           createdAt: now,
           commandTag: "assistant-complete",
           finalDeltaCommandTag: "assistant-delta-finalize",
-          ...(assistantCompletion.fallbackText !== undefined && shouldApplyFallbackCompletionText
+          ...(assistantCompletion.fallbackText !== undefined
             ? { fallbackText: assistantCompletion.fallbackText }
             : {}),
         });
@@ -1030,7 +1039,9 @@ const make = Effect.gen(function* () {
 
         const shouldApplyRuntimeError = !STRICT_PROVIDER_LIFECYCLE_GUARD
           ? true
-          : activeTurnId === null || eventTurnId === undefined || sameId(activeTurnId, eventTurnId);
+          : activeTurnId === null ||
+            eventTurnId === undefined ||
+            sameId(activeTurnId, eventTurnId);
 
         if (shouldApplyRuntimeError) {
           yield* orchestrationEngine.dispatch({
