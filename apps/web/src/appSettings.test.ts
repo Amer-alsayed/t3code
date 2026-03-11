@@ -2,14 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   getAppModelOptions,
-  getCustomModelsForProvider,
   getSlashModelOptions,
   normalizeCustomModelSlugs,
-  patchCustomModelsForProvider,
-  resolveAppServiceTier,
-  shouldShowFastTierIcon,
   resolveAppModelSelection,
-  resolveInitialThreadModelSelection,
 } from "./appSettings";
 
 describe("normalizeCustomModelSlugs", () => {
@@ -24,16 +19,6 @@ describe("normalizeCustomModelSlugs", () => {
         null,
       ]),
     ).toEqual(["custom/internal-model"]);
-  });
-
-  it("supports provider-specific Gemini custom models", () => {
-    const options = getAppModelOptions("gemini", ["gemini/internal-preview"]);
-
-    expect(options.at(-1)).toEqual({
-      slug: "gemini/internal-preview",
-      name: "gemini/internal-preview",
-      isCustom: true,
-    });
   });
 });
 
@@ -74,93 +59,16 @@ describe("resolveAppModelSelection", () => {
   });
 });
 
-describe("resolveInitialThreadModelSelection", () => {
-  it("prefers the remembered model for fresh local draft threads", () => {
-    expect(
-      resolveInitialThreadModelSelection({
-        provider: "codex",
-        hasThreadStarted: false,
-        threadModel: "gpt-5.4",
-        projectModel: "gpt-5.4",
-        rememberedModel: "gpt-5.3-codex",
-        preserveUnstartedThreadModel: false,
-      }),
-    ).toBe("gpt-5.3-codex");
-  });
-
-  it("preserves an existing unstarted server thread model", () => {
-    expect(
-      resolveInitialThreadModelSelection({
-        provider: "codex",
-        hasThreadStarted: false,
-        threadModel: "gpt-5.2-codex",
-        projectModel: "gpt-5.4",
-        rememberedModel: "gpt-5.3-codex",
-        preserveUnstartedThreadModel: true,
-      }),
-    ).toBe("gpt-5.2-codex");
-  });
-});
-
 describe("getSlashModelOptions", () => {
   it("includes saved custom model slugs for /model command suggestions", () => {
-    const options = getSlashModelOptions(
-      "codex",
-      ["custom/internal-model"],
-      "",
-      "gpt-5.3-codex",
-    );
+    const options = getSlashModelOptions("codex", ["custom/internal-model"], "", "gpt-5.3-codex");
 
     expect(options.some((option) => option.slug === "custom/internal-model")).toBe(true);
   });
 
   it("filters slash-model suggestions across built-in and custom model names", () => {
-    const options = getSlashModelOptions(
-      "codex",
-      ["openai/gpt-oss-120b"],
-      "oss",
-      "gpt-5.3-codex",
-    );
+    const options = getSlashModelOptions("codex", ["openai/gpt-oss-120b"], "oss", "gpt-5.3-codex");
 
     expect(options.map((option) => option.slug)).toEqual(["openai/gpt-oss-120b"]);
-  });
-});
-
-describe("resolveAppServiceTier", () => {
-  it("maps automatic to no override", () => {
-    expect(resolveAppServiceTier("auto")).toBeNull();
-  });
-
-  it("preserves explicit service tier overrides", () => {
-    expect(resolveAppServiceTier("fast")).toBe("fast");
-    expect(resolveAppServiceTier("flex")).toBe("flex");
-  });
-});
-
-describe("provider-specific custom models", () => {
-  it("reads custom models for the requested provider", () => {
-    expect(
-      getCustomModelsForProvider(
-        {
-          customCodexModels: ["gpt-custom"],
-          customGeminiModels: ["gemini-custom"],
-        },
-        "gemini",
-      ),
-    ).toEqual(["gemini-custom"]);
-  });
-
-  it("patches the correct settings key for Gemini custom models", () => {
-    expect(patchCustomModelsForProvider("gemini", ["gemini-custom"])).toEqual({
-      customGeminiModels: ["gemini-custom"],
-    });
-  });
-});
-
-describe("shouldShowFastTierIcon", () => {
-  it("shows the fast-tier icon only for gpt-5.4 on fast tier", () => {
-    expect(shouldShowFastTierIcon("gpt-5.4", "fast")).toBe(true);
-    expect(shouldShowFastTierIcon("gpt-5.4", "auto")).toBe(false);
-    expect(shouldShowFastTierIcon("gpt-5.3-codex", "fast")).toBe(false);
   });
 });

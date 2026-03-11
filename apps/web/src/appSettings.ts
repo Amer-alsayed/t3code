@@ -1,39 +1,13 @@
 import { useCallback, useSyncExternalStore } from "react";
 import { Option, Schema } from "effect";
-import { ProviderKind, type ProviderServiceTier } from "@t3tools/contracts";
-import {
-  getDefaultModel,
-  getModelOptions,
-  normalizeModelSlug,
-  resolveModelSlugForProvider,
-} from "@t3tools/shared/model";
+import { type ProviderKind } from "@t3tools/contracts";
+import { getDefaultModel, getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
 
 const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 const MAX_CUSTOM_MODEL_COUNT = 32;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
-export const APP_SERVICE_TIER_OPTIONS = [
-  {
-    value: "auto",
-    label: "Automatic",
-    description: "Use Codex defaults without forcing a service tier.",
-  },
-  {
-    value: "fast",
-    label: "Fast",
-    description: "Request the fast service tier when the model supports it.",
-  },
-  {
-    value: "flex",
-    label: "Flex",
-    description: "Request the flex service tier when the model supports it.",
-  },
-] as const;
-export type AppServiceTier = (typeof APP_SERVICE_TIER_OPTIONS)[number]["value"];
-const AppServiceTierSchema = Schema.Literals(["auto", "fast", "flex"]);
-const MODELS_WITH_FAST_SUPPORT = new Set(["gpt-5.4"]);
 const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>> = {
   codex: new Set(getModelOptions("codex").map((option) => option.slug)),
-  gemini: new Set(getModelOptions("gemini").map((option) => option.slug)),
 };
 
 const AppSettingsSchema = Schema.Struct({
@@ -47,18 +21,8 @@ const AppSettingsSchema = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(false)),
   ),
-  codexServiceTier: AppServiceTierSchema.pipe(Schema.withConstructorDefault(() => Option.some("auto"))),
   customCodexModels: Schema.Array(Schema.String).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
-  ),
-  customGeminiModels: Schema.Array(Schema.String).pipe(
-    Schema.withConstructorDefault(() => Option.some([])),
-  ),
-  lastUsedProvider: Schema.NullOr(ProviderKind).pipe(
-    Schema.withConstructorDefault(() => Option.some(null)),
-  ),
-  lastUsedModel: Schema.NullOr(Schema.String).pipe(
-    Schema.withConstructorDefault(() => Option.some(null)),
   ),
 });
 export type AppSettings = typeof AppSettingsSchema.Type;
@@ -66,22 +30,6 @@ export interface AppModelOption {
   slug: string;
   name: string;
   isCustom: boolean;
-}
-
-export function resolveAppServiceTier(serviceTier: AppServiceTier): ProviderServiceTier | null {
-  return serviceTier === "auto" ? null : serviceTier;
-}
-
-export function shouldShowFastTierIcon(
-  model: string | null | undefined,
-  serviceTier: AppServiceTier,
-): boolean {
-  const normalizedModel = normalizeModelSlug(model);
-  return (
-    resolveAppServiceTier(serviceTier) === "fast" &&
-    normalizedModel !== null &&
-    MODELS_WITH_FAST_SUPPORT.has(normalizedModel)
-  );
 }
 
 const DEFAULT_APP_SETTINGS = AppSettingsSchema.makeUnsafe({});
@@ -123,62 +71,7 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
   return {
     ...settings,
     customCodexModels: normalizeCustomModelSlugs(settings.customCodexModels, "codex"),
-    customGeminiModels: normalizeCustomModelSlugs(settings.customGeminiModels, "gemini"),
   };
-}
-
-export function getCustomModelsForProvider(
-  settings: Pick<AppSettings, "customCodexModels" | "customGeminiModels">,
-  provider: ProviderKind,
-): readonly string[] {
-  switch (provider) {
-    case "gemini":
-      return settings.customGeminiModels;
-    case "codex":
-    default:
-      return settings.customCodexModels;
-  }
-}
-
-export function resolveRememberedModelSelection(
-  settings: Pick<AppSettings, "lastUsedProvider" | "lastUsedModel">,
-  provider: ProviderKind,
-): string | null {
-  if (settings.lastUsedProvider !== provider) {
-    return null;
-  }
-  const normalizedModel = normalizeModelSlug(settings.lastUsedModel, provider);
-  return normalizedModel ?? null;
-}
-
-export function resolveInitialThreadModelSelection(input: {
-  provider: ProviderKind;
-  hasThreadStarted: boolean;
-  threadModel?: string | null | undefined;
-  projectModel?: string | null | undefined;
-  rememberedModel?: string | null | undefined;
-  preserveUnstartedThreadModel?: boolean | undefined;
-}): string {
-  const candidateModel = input.hasThreadStarted
-    ? input.threadModel
-    : input.preserveUnstartedThreadModel
-      ? (input.threadModel ?? input.rememberedModel ?? input.projectModel)
-      : (input.rememberedModel ?? input.projectModel ?? input.threadModel);
-
-  return resolveModelSlugForProvider(
-    input.provider,
-    candidateModel ?? getDefaultModel(input.provider),
-  );
-}
-
-export function patchCustomModelsForProvider(provider: ProviderKind, models: string[]) {
-  switch (provider) {
-    case "gemini":
-      return { customGeminiModels: models } satisfies Partial<AppSettings>;
-    case "codex":
-    default:
-      return { customCodexModels: models } satisfies Partial<AppSettings>;
-  }
 }
 
 export function getAppModelOptions(

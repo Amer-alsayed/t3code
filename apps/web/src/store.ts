@@ -7,12 +7,14 @@ import {
   type OrchestrationSessionStatus,
 } from "@t3tools/contracts";
 import {
-  resolveProviderForModel,
+  getModelOptions,
+  normalizeModelSlug,
   resolveModelSlug,
   resolveModelSlugForProvider,
 } from "@t3tools/shared/model";
 import { create } from "zustand";
 import { type ChatMessage, type Project, type Thread } from "./types";
+import { Debouncer } from "@tanstack/react-pacer";
 
 // ── State ────────────────────────────────────────────────────────────
 
@@ -24,6 +26,7 @@ export interface AppState {
 
 const PERSISTED_STATE_KEY = "t3code:renderer-state:v8";
 const LEGACY_PERSISTED_STATE_KEYS = [
+  "t3code:renderer-state:v7",
   "t3code:renderer-state:v6",
   "t3code:renderer-state:v5",
   "t3code:renderer-state:v4",
@@ -40,15 +43,7 @@ const initialState: AppState = {
   threadsHydrated: false,
 };
 const persistedExpandedProjectCwds = new Set<string>();
-let lastPersistedExpandedProjectSignature = "";
-
-type JsonLike =
-  | null
-  | boolean
-  | number
-  | string
-  | JsonLike[]
-  | { [key: string]: JsonLike | undefined };
+const persistedProjectOrderCwds: string[] = [];
 
 // ── Persist helpers ──────────────────────────────────────────────────
 
@@ -57,45 +52,53 @@ function readPersistedState(): AppState {
   try {
     const raw = window.localStorage.getItem(PERSISTED_STATE_KEY);
     if (!raw) return initialState;
-    const parsed = JSON.parse(raw) as { expandedProjectCwds?: string[] };
+    const parsed = JSON.parse(raw) as {
+      expandedProjectCwds?: string[];
+      projectOrderCwds?: string[];
+    };
     persistedExpandedProjectCwds.clear();
+    persistedProjectOrderCwds.length = 0;
     for (const cwd of parsed.expandedProjectCwds ?? []) {
       if (typeof cwd === "string" && cwd.length > 0) {
         persistedExpandedProjectCwds.add(cwd);
       }
     }
-    lastPersistedExpandedProjectSignature = Array.from(persistedExpandedProjectCwds).join("\n");
+    for (const cwd of parsed.projectOrderCwds ?? []) {
+      if (typeof cwd === "string" && cwd.length > 0 && !persistedProjectOrderCwds.includes(cwd)) {
+        persistedProjectOrderCwds.push(cwd);
+      }
+    }
     return { ...initialState };
   } catch {
     return initialState;
   }
 }
 
+let legacyKeysCleanedUp = false;
+
 function persistState(state: AppState): void {
   if (typeof window === "undefined") return;
   try {
-    const expandedProjectCwds = state.projects
-      .filter((project) => project.expanded)
-      .map((project) => project.cwd);
-    const nextSignature = expandedProjectCwds.join("\n");
-    if (lastPersistedExpandedProjectSignature === nextSignature) {
-      return;
-    }
-
     window.localStorage.setItem(
       PERSISTED_STATE_KEY,
       JSON.stringify({
-        expandedProjectCwds,
+        expandedProjectCwds: state.projects
+          .filter((project) => project.expanded)
+          .map((project) => project.cwd),
+        projectOrderCwds: state.projects.map((project) => project.cwd),
       }),
     );
-    lastPersistedExpandedProjectSignature = nextSignature;
-    for (const legacyKey of LEGACY_PERSISTED_STATE_KEYS) {
-      window.localStorage.removeItem(legacyKey);
+    if (!legacyKeysCleanedUp) {
+      legacyKeysCleanedUp = true;
+      for (const legacyKey of LEGACY_PERSISTED_STATE_KEYS) {
+        window.localStorage.removeItem(legacyKey);
+      }
     }
   } catch {
     // Ignore quota/storage errors to avoid breaking chat UX.
   }
 }
+const debouncedPersistState = new Debouncer(persistState, { wait: 500 });
 
 // ── Pure helpers ──────────────────────────────────────────────────────
 
@@ -114,198 +117,24 @@ function updateThread(
   return changed ? next : threads;
 }
 
-function isJsonLikeEqual(left: JsonLike | undefined, right: JsonLike | undefined): boolean {
-  if (Object.is(left, right)) {
-    return true;
-  }
-  if (left === null || right === null || left === undefined || right === undefined) {
-    return false;
-  }
-  if (Array.isArray(left) || Array.isArray(right)) {
-    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
-      return false;
-    }
-    for (let index = 0; index < left.length; index += 1) {
-      if (!isJsonLikeEqual(left[index], right[index])) {
-        return false;
-      }
-    }
-    return true;
-  }
-  if (typeof left !== "object" || typeof right !== "object") {
-    return false;
-  }
-
-  const leftKeys = Object.keys(left);
-  const rightKeys = Object.keys(right);
-  if (leftKeys.length !== rightKeys.length) {
-    return false;
-  }
-  for (const key of leftKeys) {
-    if (!(key in right)) {
-      return false;
-    }
-    if (!isJsonLikeEqual(left[key], right[key])) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function toJsonLike(value: unknown): JsonLike | undefined {
-  return value as JsonLike | undefined;
-}
-
-function reuseArrayIfEqual<T>(
-  previous: readonly T[] | undefined,
-  next: readonly T[],
-  areEqual: (left: T, right: T) => boolean,
-): T[] {
-  if (!previous || previous.length !== next.length) {
-    return [...next];
-  }
-
-  let changed = false;
-  const merged = next.map((item, index) => {
-    const existing = previous[index];
-    if (existing !== undefined && areEqual(existing, item)) {
-      return existing;
-    }
-    changed = true;
-    return item;
-  });
-  return changed ? merged : (previous as T[]);
-}
-
-function areProjectScriptsEqual(left: Project["scripts"], right: Project["scripts"]): boolean {
-  return isJsonLikeEqual(toJsonLike(left), toJsonLike(right));
-}
-
-function areChatAttachmentsEqual(
-  left: ChatMessage["attachments"],
-  right: ChatMessage["attachments"],
-): boolean {
-  return isJsonLikeEqual(toJsonLike(left), toJsonLike(right));
-}
-
-function areMessagesEqual(left: ChatMessage, right: ChatMessage): boolean {
-  return (
-    left.id === right.id &&
-    left.role === right.role &&
-    left.text === right.text &&
-    left.createdAt === right.createdAt &&
-    left.completedAt === right.completedAt &&
-    left.streaming === right.streaming &&
-    areChatAttachmentsEqual(left.attachments, right.attachments)
-  );
-}
-
-function areProposedPlansEqual(left: Thread["proposedPlans"], right: Thread["proposedPlans"]): boolean {
-  return isJsonLikeEqual(toJsonLike(left), toJsonLike(right));
-}
-
-function areTurnDiffSummariesEqual(
-  left: Thread["turnDiffSummaries"],
-  right: Thread["turnDiffSummaries"],
-): boolean {
-  return isJsonLikeEqual(toJsonLike(left), toJsonLike(right));
-}
-
-function areActivitiesEqual(left: Thread["activities"], right: Thread["activities"]): boolean {
-  return isJsonLikeEqual(toJsonLike(left), toJsonLike(right));
-}
-
-function areProjectsEqual(left: Project, right: Project): boolean {
-  return (
-    left.id === right.id &&
-    left.name === right.name &&
-    left.cwd === right.cwd &&
-    left.model === right.model &&
-    left.expanded === right.expanded &&
-    areProjectScriptsEqual(left.scripts, right.scripts)
-  );
-}
-
-function areThreadSessionsEqual(left: Thread["session"], right: Thread["session"]): boolean {
-  return isJsonLikeEqual(toJsonLike(left), toJsonLike(right));
-}
-
-function areThreadsEqual(left: Thread, right: Thread): boolean {
-  return (
-    left.id === right.id &&
-    left.codexThreadId === right.codexThreadId &&
-    left.projectId === right.projectId &&
-    left.title === right.title &&
-    left.model === right.model &&
-    left.runtimeMode === right.runtimeMode &&
-    left.interactionMode === right.interactionMode &&
-    areThreadSessionsEqual(left.session, right.session) &&
-    left.error === right.error &&
-    left.createdAt === right.createdAt &&
-    left.lastVisitedAt === right.lastVisitedAt &&
-    left.branch === right.branch &&
-    left.worktreePath === right.worktreePath &&
-    isJsonLikeEqual(toJsonLike(left.latestTurn), toJsonLike(right.latestTurn)) &&
-    isJsonLikeEqual(toJsonLike(left.messages), toJsonLike(right.messages)) &&
-    areProposedPlansEqual(left.proposedPlans, right.proposedPlans) &&
-    areTurnDiffSummariesEqual(left.turnDiffSummaries, right.turnDiffSummaries) &&
-    areActivitiesEqual(left.activities, right.activities)
-  );
-}
-
-function reuseProject(previous: Project | undefined, next: Project): Project {
-  if (!previous) {
-    return next;
-  }
-  const scripts = reuseArrayIfEqual(previous.scripts, next.scripts, (left, right) =>
-    isJsonLikeEqual(toJsonLike(left), toJsonLike(right)),
-  );
-  const candidate = scripts === next.scripts ? next : { ...next, scripts };
-  return areProjectsEqual(previous, candidate) ? previous : candidate;
-}
-
-function reuseThread(previous: Thread | undefined, next: Thread): Thread {
-  if (!previous) {
-    return next;
-  }
-
-  const messages = reuseArrayIfEqual(previous.messages, next.messages, areMessagesEqual);
-  const proposedPlans = reuseArrayIfEqual(
-    previous.proposedPlans,
-    next.proposedPlans,
-    (left, right) => isJsonLikeEqual(toJsonLike(left), toJsonLike(right)),
-  );
-  const turnDiffSummaries = reuseArrayIfEqual(
-    previous.turnDiffSummaries,
-    next.turnDiffSummaries,
-    (left, right) => isJsonLikeEqual(toJsonLike(left), toJsonLike(right)),
-  );
-  const activities = reuseArrayIfEqual(
-    previous.activities,
-    next.activities,
-    (left, right) => isJsonLikeEqual(toJsonLike(left), toJsonLike(right)),
-  );
-  const candidate =
-    messages === next.messages &&
-    proposedPlans === next.proposedPlans &&
-    turnDiffSummaries === next.turnDiffSummaries &&
-    activities === next.activities
-      ? next
-      : { ...next, activities, messages, proposedPlans, turnDiffSummaries };
-
-  return areThreadsEqual(previous, candidate) ? previous : candidate;
-}
-
 function mapProjectsFromReadModel(
   incoming: OrchestrationReadModel["projects"],
   previous: Project[],
 ): Project[] {
   const previousById = new Map(previous.map((project) => [project.id, project] as const));
-  return incoming.map((project) => {
-    const existing =
-      previousById.get(project.id) ??
-      previous.find((entry) => entry.cwd === project.workspaceRoot);
-    return reuseProject(existing, {
+  const previousByCwd = new Map(previous.map((project) => [project.cwd, project] as const));
+  const previousOrderById = new Map(previous.map((project, index) => [project.id, index] as const));
+  const previousOrderByCwd = new Map(
+    previous.map((project, index) => [project.cwd, index] as const),
+  );
+  const persistedOrderByCwd = new Map(
+    persistedProjectOrderCwds.map((cwd, index) => [cwd, index] as const),
+  );
+  const usePersistedOrder = previous.length === 0;
+
+  const mappedProjects = incoming.map((project) => {
+    const existing = previousById.get(project.id) ?? previousByCwd.get(project.workspaceRoot);
+    return {
       id: project.id,
       name: project.title,
       cwd: project.workspaceRoot,
@@ -318,8 +147,26 @@ function mapProjectsFromReadModel(
           ? persistedExpandedProjectCwds.has(project.workspaceRoot)
           : true),
       scripts: project.scripts.map((script) => ({ ...script })),
-    });
+    } satisfies Project;
   });
+
+  return mappedProjects
+    .map((project, incomingIndex) => {
+      const previousIndex =
+        previousOrderById.get(project.id) ?? previousOrderByCwd.get(project.cwd);
+      const persistedIndex = usePersistedOrder ? persistedOrderByCwd.get(project.cwd) : undefined;
+      const orderIndex =
+        previousIndex ??
+        persistedIndex ??
+        (usePersistedOrder ? persistedProjectOrderCwds.length : previous.length) + incomingIndex;
+      return { project, incomingIndex, orderIndex };
+    })
+    .toSorted((a, b) => {
+      const byOrder = a.orderIndex - b.orderIndex;
+      if (byOrder !== 0) return byOrder;
+      return a.incomingIndex - b.incomingIndex;
+    })
+    .map((entry) => entry.project);
 }
 
 function toLegacySessionStatus(
@@ -342,20 +189,26 @@ function toLegacySessionStatus(
 }
 
 function toLegacyProvider(providerName: string | null): ProviderKind {
-  if (providerName === "codex" || providerName === "gemini") {
+  if (providerName === "codex") {
     return providerName;
   }
   return "codex";
 }
 
+const CODEX_MODEL_SLUGS = new Set<string>(getModelOptions("codex").map((option) => option.slug));
+
 function inferProviderForThreadModel(input: {
   readonly model: string;
   readonly sessionProviderName: string | null;
 }): ProviderKind {
-  if (input.sessionProviderName === "codex" || input.sessionProviderName === "gemini") {
+  if (input.sessionProviderName === "codex") {
     return input.sessionProviderName;
   }
-  return resolveProviderForModel(input.model);
+  const normalizedCodex = normalizeModelSlug(input.model, "codex");
+  if (normalizedCodex && CODEX_MODEL_SLUGS.has(normalizedCodex)) {
+    return "codex";
+  }
+  return "codex";
 }
 
 function resolveWsHttpOrigin(): string {
@@ -402,7 +255,7 @@ export function syncServerReadModel(state: AppState, readModel: OrchestrationRea
     .filter((thread) => thread.deletedAt === null)
     .map((thread) => {
       const existing = existingThreadById.get(thread.id);
-      return reuseThread(existing, {
+      return {
         id: thread.id,
         codexThreadId: null,
         projectId: thread.projectId,
@@ -470,22 +323,12 @@ export function syncServerReadModel(state: AppState, readModel: OrchestrationRea
           files: checkpoint.files.map((file) => ({ ...file })),
         })),
         activities: thread.activities.map((activity) => ({ ...activity })),
-      });
+      };
     });
-  const projectsChanged =
-    projects.length !== state.projects.length ||
-    projects.some((project, index) => project !== state.projects[index]);
-  const threadsChanged =
-    threads.length !== state.threads.length ||
-    threads.some((thread, index) => thread !== state.threads[index]);
-  const threadsHydratedChanged = !state.threadsHydrated;
-  if (!projectsChanged && !threadsChanged && !threadsHydratedChanged) {
-    return state;
-  }
   return {
     ...state,
-    ...(projectsChanged ? { projects } : {}),
-    ...(threadsChanged ? { threads } : {}),
+    projects,
+    threads,
     threadsHydrated: true,
   };
 }
@@ -544,6 +387,22 @@ export function setProjectExpanded(
   return changed ? { ...state, projects } : state;
 }
 
+export function reorderProjects(
+  state: AppState,
+  draggedProjectId: Project["id"],
+  targetProjectId: Project["id"],
+): AppState {
+  if (draggedProjectId === targetProjectId) return state;
+  const draggedIndex = state.projects.findIndex((project) => project.id === draggedProjectId);
+  const targetIndex = state.projects.findIndex((project) => project.id === targetProjectId);
+  if (draggedIndex < 0 || targetIndex < 0) return state;
+  const projects = [...state.projects];
+  const [draggedProject] = projects.splice(draggedIndex, 1);
+  if (!draggedProject) return state;
+  projects.splice(targetIndex, 0, draggedProject);
+  return { ...state, projects };
+}
+
 export function setError(state: AppState, threadId: ThreadId, error: string | null): AppState {
   const threads = updateThread(state.threads, threadId, (t) => {
     if (t.error === error) return t;
@@ -579,6 +438,7 @@ interface AppStore extends AppState {
   markThreadUnread: (threadId: ThreadId) => void;
   toggleProject: (projectId: Project["id"]) => void;
   setProjectExpanded: (projectId: Project["id"], expanded: boolean) => void;
+  reorderProjects: (draggedProjectId: Project["id"], targetProjectId: Project["id"]) => void;
   setError: (threadId: ThreadId, error: string | null) => void;
   setThreadBranch: (threadId: ThreadId, branch: string | null, worktreePath: string | null) => void;
 }
@@ -592,17 +452,22 @@ export const useStore = create<AppStore>((set) => ({
   toggleProject: (projectId) => set((state) => toggleProject(state, projectId)),
   setProjectExpanded: (projectId, expanded) =>
     set((state) => setProjectExpanded(state, projectId, expanded)),
+  reorderProjects: (draggedProjectId, targetProjectId) =>
+    set((state) => reorderProjects(state, draggedProjectId, targetProjectId)),
   setError: (threadId, error) => set((state) => setError(state, threadId, error)),
   setThreadBranch: (threadId, branch, worktreePath) =>
     set((state) => setThreadBranch(state, threadId, branch, worktreePath)),
 }));
 
-useStore.subscribe((state, previousState) => {
-  if (state.projects === previousState.projects) {
-    return;
-  }
-  persistState(state);
-});
+// Persist state changes with debouncing to avoid localStorage thrashing
+useStore.subscribe((state) => debouncedPersistState.maybeExecute(state));
+
+// Flush pending writes synchronously before page unload to prevent data loss.
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", () => {
+    debouncedPersistState.flush();
+  });
+}
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {

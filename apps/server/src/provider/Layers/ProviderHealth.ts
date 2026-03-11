@@ -1,27 +1,33 @@
 /**
  * ProviderHealthLive - Startup-time provider health checks.
  *
- * Performs one-time provider readiness checks when the server starts and
+ * Performs one-time provider readiness probes when the server starts and
  * keeps the resulting snapshot in memory for `server.getConfig`.
  *
- * Startup checks must stay non-interactive. We only verify local CLI
- * availability here and defer real authentication/runtime failures to the
- * first provider session/turn.
+ * Uses effect's ChildProcessSpawner to run CLI probes natively.
  *
  * @module ProviderHealthLive
  */
+import * as OS from "node:os";
 import type {
   ServerProviderAuthStatus,
   ServerProviderStatus,
   ServerProviderStatusState,
 } from "@t3tools/contracts";
-import { Effect, Layer } from "effect";
+import { Array, Effect, Fiber, FileSystem, Layer, Option, Path, Result, Stream } from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { isCodexCliAvailable, isGeminiCliAvailable } from "../../cliEnvironment";
+import {
+  formatCodexCliUpgradeMessage,
+  isCodexCliVersionSupported,
+  parseCodexCliVersion,
+} from "../codexCliVersion";
 import { ProviderHealth, type ProviderHealthShape } from "../Services/ProviderHealth";
 
+const DEFAULT_TIMEOUT_MS = 4_000;
 const CODEX_PROVIDER = "codex" as const;
-const GEMINI_PROVIDER = "gemini" as const;
+
+// ── Pure helpers ────────────────────────────────────────────────────
 
 export interface CommandResult {
   readonly stdout: string;
@@ -35,7 +41,20 @@ function nonEmptyTrimmed(value: string | undefined): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function detailFromResult(result: CommandResult & { readonly timedOut?: boolean }): string | undefined {
+function isCommandMissingCause(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const lower = error.message.toLowerCase();
+  return (
+    lower.includes("command not found: codex") ||
+    lower.includes("spawn codex enoent") ||
+    lower.includes("enoent") ||
+    lower.includes("notfound")
+  );
+}
+
+function detailFromResult(
+  result: CommandResult & { readonly timedOut?: boolean },
+): string | undefined {
   if (result.timedOut) return "Timed out while running command.";
   const stderr = nonEmptyTrimmed(result.stderr);
   if (stderr) return stderr;
@@ -149,62 +168,240 @@ export function parseAuthStatusFromOutput(result: CommandResult): {
   };
 }
 
-export const checkCodexProviderStatus: Effect.Effect<ServerProviderStatus, never> = Effect.sync(() => {
+// ── Codex CLI config detection ──────────────────────────────────────
+
+/**
+ * Providers that use OpenAI-native authentication via `codex login`.
+ * When the configured `model_provider` is one of these, the `codex login
+ * status` probe still runs. For any other provider value the auth probe
+ * is skipped because authentication is handled externally (e.g. via
+ * environment variables like `PORTKEY_API_KEY` or `AZURE_API_KEY`).
+ */
+const OPENAI_AUTH_PROVIDERS = new Set(["openai"]);
+
+/**
+ * Read the `model_provider` value from the Codex CLI config file.
+ *
+ * Looks for the file at `$CODEX_HOME/config.toml` (falls back to
+ * `~/.codex/config.toml`). Uses a simple line-by-line scan rather than
+ * a full TOML parser to avoid adding a dependency for a single key.
+ *
+ * Returns `undefined` when the file does not exist or does not set
+ * `model_provider`.
+ */
+export const readCodexConfigModelProvider = Effect.gen(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const codexHome = process.env.CODEX_HOME || path.join(OS.homedir(), ".codex");
+  const configPath = path.join(codexHome, "config.toml");
+
+  const content = yield* fileSystem
+    .readFileString(configPath)
+    .pipe(Effect.orElseSucceed(() => undefined));
+  if (content === undefined) {
+    return undefined;
+  }
+
+  // We need to find `model_provider = "..."` at the top level of the
+  // TOML file (i.e. before any `[section]` header). Lines inside
+  // `[profiles.*]`, `[model_providers.*]`, etc. are ignored.
+  let inTopLevel = true;
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    // Skip comments and empty lines.
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    // Detect section headers — once we leave the top level, stop.
+    if (trimmed.startsWith("[")) {
+      inTopLevel = false;
+      continue;
+    }
+    if (!inTopLevel) continue;
+
+    const match = trimmed.match(/^model_provider\s*=\s*["']([^"']+)["']/);
+    if (match) return match[1];
+  }
+  return undefined;
+});
+
+/**
+ * Returns `true` when the Codex CLI is configured with a custom
+ * (non-OpenAI) model provider, meaning `codex login` auth is not
+ * required because authentication is handled through provider-specific
+ * environment variables.
+ */
+export const hasCustomModelProvider = Effect.map(
+  readCodexConfigModelProvider,
+  (provider) => provider !== undefined && !OPENAI_AUTH_PROVIDERS.has(provider),
+);
+
+// ── Effect-native command execution ─────────────────────────────────
+
+const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> =>
+  Stream.runFold(
+    stream,
+    () => "",
+    (acc, chunk) => acc + new TextDecoder().decode(chunk),
+  );
+
+const runCodexCommand = (args: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const command = ChildProcess.make("codex", [...args], {
+      shell: process.platform === "win32",
+    });
+
+    const child = yield* spawner.spawn(command);
+
+    const [stdout, stderr, exitCode] = yield* Effect.all(
+      [
+        collectStreamAsString(child.stdout),
+        collectStreamAsString(child.stderr),
+        child.exitCode.pipe(Effect.map(Number)),
+      ],
+      { concurrency: "unbounded" },
+    );
+
+    return { stdout, stderr, code: exitCode } satisfies CommandResult;
+  }).pipe(Effect.scoped);
+
+// ── Health check ────────────────────────────────────────────────────
+
+export const checkCodexProviderStatus: Effect.Effect<
+  ServerProviderStatus,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+> = Effect.gen(function* () {
   const checkedAt = new Date().toISOString();
 
-  if (!isCodexCliAvailable()) {
+  // Probe 1: `codex --version` — is the CLI reachable?
+  const versionProbe = yield* runCodexCommand(["--version"]).pipe(
+    Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
+    Effect.result,
+  );
+
+  if (Result.isFailure(versionProbe)) {
+    const error = versionProbe.failure;
     return {
       provider: CODEX_PROVIDER,
       status: "error" as const,
       available: false,
       authStatus: "unknown" as const,
       checkedAt,
-      message: "Codex CLI (`codex`) is not installed or not on PATH.",
+      message: isCommandMissingCause(error)
+        ? "Codex CLI (`codex`) is not installed or not on PATH."
+        : `Failed to execute Codex CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
     };
   }
 
-  return {
-    provider: CODEX_PROVIDER,
-    status: "ready" as const,
-    available: true,
-    authStatus: "unknown" as const,
-    checkedAt,
-  } satisfies ServerProviderStatus;
-});
-
-export const checkGeminiProviderStatus: Effect.Effect<ServerProviderStatus, never> = Effect.sync(() => {
-  const checkedAt = new Date().toISOString();
-
-  if (!isGeminiCliAvailable()) {
+  if (Option.isNone(versionProbe.success)) {
     return {
-      provider: GEMINI_PROVIDER,
+      provider: CODEX_PROVIDER,
       status: "error" as const,
       available: false,
       authStatus: "unknown" as const,
       checkedAt,
-      message: "Gemini CLI (`gemini`) is not installed or not on PATH.",
+      message: "Codex CLI is installed but failed to run. Timed out while running command.",
     };
   }
 
+  const version = versionProbe.success.value;
+  if (version.code !== 0) {
+    const detail = detailFromResult(version);
+    return {
+      provider: CODEX_PROVIDER,
+      status: "error" as const,
+      available: false,
+      authStatus: "unknown" as const,
+      checkedAt,
+      message: detail
+        ? `Codex CLI is installed but failed to run. ${detail}`
+        : "Codex CLI is installed but failed to run.",
+    };
+  }
+
+  const parsedVersion = parseCodexCliVersion(`${version.stdout}\n${version.stderr}`);
+  if (parsedVersion && !isCodexCliVersionSupported(parsedVersion)) {
+    return {
+      provider: CODEX_PROVIDER,
+      status: "error" as const,
+      available: false,
+      authStatus: "unknown" as const,
+      checkedAt,
+      message: formatCodexCliUpgradeMessage(parsedVersion),
+    };
+  }
+
+  // Probe 2: `codex login status` — is the user authenticated?
+  //
+  // Custom model providers (e.g. Portkey, Azure OpenAI proxy) handle
+  // authentication through their own environment variables, so `codex
+  // login status` will report "not logged in" even when the CLI works
+  // fine.  Skip the auth probe entirely for non-OpenAI providers.
+  if (yield* hasCustomModelProvider) {
+    return {
+      provider: CODEX_PROVIDER,
+      status: "ready" as const,
+      available: true,
+      authStatus: "unknown" as const,
+      checkedAt,
+      message: "Using a custom Codex model provider; OpenAI login check skipped.",
+    } satisfies ServerProviderStatus;
+  }
+
+  const authProbe = yield* runCodexCommand(["login", "status"]).pipe(
+    Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
+    Effect.result,
+  );
+
+  if (Result.isFailure(authProbe)) {
+    const error = authProbe.failure;
+    return {
+      provider: CODEX_PROVIDER,
+      status: "warning" as const,
+      available: true,
+      authStatus: "unknown" as const,
+      checkedAt,
+      message:
+        error instanceof Error
+          ? `Could not verify Codex authentication status: ${error.message}.`
+          : "Could not verify Codex authentication status.",
+    };
+  }
+
+  if (Option.isNone(authProbe.success)) {
+    return {
+      provider: CODEX_PROVIDER,
+      status: "warning" as const,
+      available: true,
+      authStatus: "unknown" as const,
+      checkedAt,
+      message: "Could not verify Codex authentication status. Timed out while running command.",
+    };
+  }
+
+  const parsed = parseAuthStatusFromOutput(authProbe.success.value);
   return {
-    provider: GEMINI_PROVIDER,
-    status: "ready" as const,
+    provider: CODEX_PROVIDER,
+    status: parsed.status,
     available: true,
-    authStatus: process.env.GEMINI_API_KEY ? "authenticated" : "unknown",
+    authStatus: parsed.authStatus,
     checkedAt,
-  };
+    ...(parsed.message ? { message: parsed.message } : {}),
+  } satisfies ServerProviderStatus;
 });
+
+// ── Layer ───────────────────────────────────────────────────────────
 
 export const ProviderHealthLive = Layer.effect(
   ProviderHealth,
   Effect.gen(function* () {
-    const [codexStatus, geminiStatus] = yield* Effect.all(
-      [checkCodexProviderStatus, checkGeminiProviderStatus],
-      { concurrency: 2 },
+    const codexStatusFiber = yield* checkCodexProviderStatus.pipe(
+      Effect.map(Array.of),
+      Effect.forkScoped,
     );
 
     return {
-      getStatuses: Effect.succeed([codexStatus, geminiStatus]),
+      getStatuses: Fiber.join(codexStatusFiber),
     } satisfies ProviderHealthShape;
   }),
 );

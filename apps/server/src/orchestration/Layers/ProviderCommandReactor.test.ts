@@ -41,7 +41,10 @@ const asApprovalRequestId = (value: string): ApprovalRequestId =>
 const asMessageId = (value: string): MessageId => MessageId.makeUnsafe(value);
 const asTurnId = (value: string): TurnId => TurnId.makeUnsafe(value);
 
-async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 2000): Promise<void> {
+async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = 2000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   const poll = async (): Promise<void> => {
     if (await predicate()) {
@@ -80,10 +83,7 @@ describe("ProviderCommandReactor", () => {
     createdStateDirs.clear();
   });
 
-  async function createHarness(input?: {
-    readonly stateDir?: string;
-    readonly bootstrapProjectAndThread?: boolean;
-  }) {
+  async function createHarness(input?: { readonly stateDir?: string }) {
     const now = new Date().toISOString();
     const stateDir = input?.stateDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "t3code-reactor-"));
     createdStateDirs.add(stateDir);
@@ -104,7 +104,10 @@ describe("ProviderCommandReactor", () => {
           ? input.resumeCursor
           : undefined;
       const model =
-        typeof input === "object" && input !== null && "model" in input && typeof input.model === "string"
+        typeof input === "object" &&
+        input !== null &&
+        "model" in input &&
+        typeof input.model === "string"
           ? input.model
           : undefined;
       const threadId =
@@ -216,40 +219,37 @@ describe("ProviderCommandReactor", () => {
     const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(reactor.start.pipe(Scope.provide(scope)));
-    await Effect.runPromise(Effect.sleep("10 millis"));
+    const drain = () => Effect.runPromise(reactor.drain);
 
-    if (input?.bootstrapProjectAndThread !== false) {
-      await Effect.runPromise(
-        engine.dispatch({
-          type: "project.create",
-          commandId: CommandId.makeUnsafe("cmd-project-create"),
-          projectId: asProjectId("project-1"),
-          title: "Provider Project",
-          workspaceRoot: "/tmp/provider-project",
-          defaultModel: "gpt-5-codex",
-          createdAt: now,
-        }),
-      );
-      await Effect.runPromise(
-        engine.dispatch({
-          type: "thread.create",
-          commandId: CommandId.makeUnsafe("cmd-thread-create"),
-          threadId: ThreadId.makeUnsafe("thread-1"),
-          projectId: asProjectId("project-1"),
-          title: "Thread",
-          model: "gpt-5-codex",
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          runtimeMode: "approval-required",
-          branch: null,
-          worktreePath: null,
-          createdAt: now,
-        }),
-      );
-    }
+    await Effect.runPromise(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.makeUnsafe("cmd-project-create"),
+        projectId: asProjectId("project-1"),
+        title: "Provider Project",
+        workspaceRoot: "/tmp/provider-project",
+        defaultModel: "gpt-5-codex",
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.makeUnsafe("cmd-thread-create"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        projectId: asProjectId("project-1"),
+        title: "Thread",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+      }),
+    );
 
     return {
       engine,
-      runtimeSessions,
       startSession,
       sendTurn,
       interruptTurn,
@@ -259,6 +259,7 @@ describe("ProviderCommandReactor", () => {
       renameBranch,
       generateBranchName,
       stateDir,
+      drain,
     };
   }
 
@@ -480,7 +481,9 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(async () => {
       const readModel = await Effect.runPromise(harness.engine.getReadModel());
-      const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
+      const thread = readModel.threads.find(
+        (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
+      );
       return thread?.runtimeMode === "approval-required";
     });
     await waitFor(() => harness.startSession.mock.calls.length === 2);
@@ -569,11 +572,13 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(async () => {
       const readModel = await Effect.runPromise(harness.engine.getReadModel());
-      const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
+      const thread = readModel.threads.find(
+        (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
+      );
       return thread?.runtimeMode === "approval-required";
     });
     await waitFor(() => harness.startSession.mock.calls.length === 2);
-    await Effect.runPromise(Effect.sleep("30 millis"));
+    await harness.drain();
 
     expect(harness.stopSession.mock.calls.length).toBe(0);
     expect(harness.sendTurn.mock.calls.length).toBe(1);
@@ -587,17 +592,6 @@ describe("ProviderCommandReactor", () => {
   it("reacts to thread.turn.interrupt-requested by calling provider interrupt", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
-
-    harness.runtimeSessions.push({
-      provider: "codex",
-      status: "running",
-      runtimeMode: "approval-required",
-      threadId: ThreadId.makeUnsafe("thread-1"),
-      activeTurnId: asTurnId("turn-1"),
-      resumeCursor: { opaque: "cursor-1" },
-      createdAt: now,
-      updatedAt: now,
-    });
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -631,116 +625,6 @@ describe("ProviderCommandReactor", () => {
     expect(harness.interruptTurn.mock.calls[0]?.[0]).toEqual({
       threadId: "thread-1",
     });
-  });
-
-  it("settles a stale running turn when interrupt is requested after the live session is gone", async () => {
-    const harness = await createHarness();
-    const now = new Date().toISOString();
-
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.session.set",
-        commandId: CommandId.makeUnsafe("cmd-session-set-stale-interrupt"),
-        threadId: ThreadId.makeUnsafe("thread-1"),
-        session: {
-          threadId: ThreadId.makeUnsafe("thread-1"),
-          status: "running",
-          providerName: "codex",
-          runtimeMode: "approval-required",
-          activeTurnId: asTurnId("turn-1"),
-          lastError: null,
-          updatedAt: now,
-        },
-        createdAt: now,
-      }),
-    );
-
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.interrupt",
-        commandId: CommandId.makeUnsafe("cmd-turn-interrupt-stale"),
-        threadId: ThreadId.makeUnsafe("thread-1"),
-        turnId: asTurnId("turn-1"),
-        createdAt: now,
-      }),
-    );
-
-    await waitFor(async () => {
-      const readModel = await Effect.runPromise(harness.engine.getReadModel());
-      const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
-      return (
-        thread?.session?.status === "interrupted" &&
-        thread.session.activeTurnId === null &&
-        thread.latestTurn?.state === "interrupted" &&
-        thread.latestTurn.completedAt !== null
-      );
-    });
-
-    expect(harness.interruptTurn.mock.calls.length).toBe(0);
-    const readModel = await Effect.runPromise(harness.engine.getReadModel());
-    const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
-    expect(thread?.session?.status).toBe("interrupted");
-    expect(thread?.session?.activeTurnId).toBeNull();
-    expect(thread?.latestTurn?.state).toBe("interrupted");
-    expect(thread?.latestTurn?.completedAt).not.toBeNull();
-  });
-
-  it("reconciles stale running turns on startup after the provider process disappears", async () => {
-    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-reactor-restart-"));
-    createdStateDirs.add(stateDir);
-    const initialHarness = await createHarness({ stateDir });
-    const now = new Date().toISOString();
-
-    await Effect.runPromise(
-      initialHarness.engine.dispatch({
-        type: "thread.session.set",
-        commandId: CommandId.makeUnsafe("cmd-session-set-before-restart"),
-        threadId: ThreadId.makeUnsafe("thread-1"),
-        session: {
-          threadId: ThreadId.makeUnsafe("thread-1"),
-          status: "running",
-          providerName: "codex",
-          runtimeMode: "approval-required",
-          activeTurnId: asTurnId("turn-1"),
-          lastError: null,
-          updatedAt: now,
-        },
-        createdAt: now,
-      }),
-    );
-
-    if (scope) {
-      await Effect.runPromise(Scope.close(scope, Exit.void));
-    }
-    scope = null;
-    if (runtime) {
-      await runtime.dispose();
-    }
-    runtime = null;
-
-    const restartedHarness = await createHarness({
-      stateDir,
-      bootstrapProjectAndThread: false,
-    });
-
-    await waitFor(async () => {
-      const readModel = await Effect.runPromise(restartedHarness.engine.getReadModel());
-      const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
-      return (
-        thread?.session?.status === "interrupted" &&
-        thread.session.activeTurnId === null &&
-        thread.latestTurn?.state === "interrupted" &&
-        thread.latestTurn.completedAt !== null
-      );
-    });
-
-    expect(restartedHarness.interruptTurn.mock.calls.length).toBe(0);
-    const readModel = await Effect.runPromise(restartedHarness.engine.getReadModel());
-    const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
-    expect(thread?.session?.status).toBe("interrupted");
-    expect(thread?.session?.activeTurnId).toBeNull();
-    expect(thread?.latestTurn?.state).toBe("interrupted");
-    expect(thread?.latestTurn?.completedAt).not.toBeNull();
   });
 
   it("reacts to thread.approval.respond by forwarding provider approval response", async () => {
@@ -894,9 +778,13 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(async () => {
       const readModel = await Effect.runPromise(harness.engine.getReadModel());
-      const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
+      const thread = readModel.threads.find(
+        (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
+      );
       if (!thread) return false;
-      return thread.activities.some((activity) => activity.kind === "provider.approval.respond.failed");
+      return thread.activities.some(
+        (activity) => activity.kind === "provider.approval.respond.failed",
+      );
     });
 
     const readModel = await Effect.runPromise(harness.engine.getReadModel());
