@@ -11,7 +11,6 @@ import {
   MessageId,
   ProjectId,
   ProviderItemId,
-  type ProviderKind,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -46,7 +45,7 @@ const asTurnId = (value: string): TurnId => TurnId.makeUnsafe(value);
 type LegacyProviderRuntimeEvent = {
   readonly type: string;
   readonly eventId: EventId;
-  readonly provider: ProviderKind;
+  readonly provider: "codex";
   readonly createdAt: string;
   readonly threadId: ThreadId;
   readonly turnId?: string | undefined;

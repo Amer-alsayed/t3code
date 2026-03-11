@@ -22,12 +22,10 @@ import {
   isCodexCliVersionSupported,
   parseCodexCliVersion,
 } from "../codexCliVersion";
-import { resolveGeminiCliLaunchSpec } from "../../cliEnvironment";
 import { ProviderHealth, type ProviderHealthShape } from "../Services/ProviderHealth";
 
 const DEFAULT_TIMEOUT_MS = 4_000;
 const CODEX_PROVIDER = "codex" as const;
-const GEMINI_PROVIDER = "gemini" as const;
 
 // ── Pure helpers ────────────────────────────────────────────────────
 
@@ -49,18 +47,6 @@ function isCommandMissingCause(error: unknown): boolean {
   return (
     lower.includes("command not found: codex") ||
     lower.includes("spawn codex enoent") ||
-    lower.includes("enoent") ||
-    lower.includes("notfound")
-  );
-}
-
-function isGeminiCommandMissingCause(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const lower = error.message.toLowerCase();
-  return (
-    lower.includes("command not found: gemini") ||
-    lower.includes("spawn gemini enoent") ||
-    lower.includes("spawn node enoent") ||
     lower.includes("enoent") ||
     lower.includes("notfound")
   );
@@ -278,31 +264,6 @@ const runCodexCommand = (args: ReadonlyArray<string>) =>
     return { stdout, stderr, code: exitCode } satisfies CommandResult;
   }).pipe(Effect.scoped);
 
-const runGeminiCommand = (args: ReadonlyArray<string>) =>
-  Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const launch = resolveGeminiCliLaunchSpec(process.env);
-    if (!launch) {
-      return { stdout: "", stderr: "", code: 1 } satisfies CommandResult;
-    }
-
-    const command = ChildProcess.make(launch.command, [...launch.argsPrefix, ...args], {
-      shell: process.platform === "win32",
-    });
-    const child = yield* spawner.spawn(command);
-
-    const [stdout, stderr, exitCode] = yield* Effect.all(
-      [
-        collectStreamAsString(child.stdout),
-        collectStreamAsString(child.stderr),
-        child.exitCode.pipe(Effect.map(Number)),
-      ],
-      { concurrency: "unbounded" },
-    );
-
-    return { stdout, stderr, code: exitCode } satisfies CommandResult;
-  }).pipe(Effect.scoped);
-
 // ── Health check ────────────────────────────────────────────────────
 
 export const checkCodexProviderStatus: Effect.Effect<
@@ -429,91 +390,18 @@ export const checkCodexProviderStatus: Effect.Effect<
   } satisfies ServerProviderStatus;
 });
 
-export const checkGeminiProviderStatus: Effect.Effect<
-  ServerProviderStatus,
-  never,
-  ChildProcessSpawner.ChildProcessSpawner
-> = Effect.gen(function* () {
-  const checkedAt = new Date().toISOString();
-  const launch = resolveGeminiCliLaunchSpec(process.env);
-  if (!launch) {
-    return {
-      provider: GEMINI_PROVIDER,
-      status: "error" as const,
-      available: false,
-      authStatus: "unknown" as const,
-      checkedAt,
-      message:
-        "Gemini CLI (`gemini`) is not installed or could not be resolved. Install `@google/gemini-cli` and ensure it is available.",
-    };
-  }
-
-  const versionProbe = yield* runGeminiCommand(["--version"]).pipe(
-    Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
-    Effect.result,
-  );
-
-  if (Result.isFailure(versionProbe)) {
-    const error = versionProbe.failure;
-    return {
-      provider: GEMINI_PROVIDER,
-      status: "error" as const,
-      available: false,
-      authStatus: "unknown" as const,
-      checkedAt,
-      message: isGeminiCommandMissingCause(error)
-        ? "Gemini CLI (`gemini`) is not installed or not on PATH."
-        : `Failed to execute Gemini CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
-    };
-  }
-
-  if (Option.isNone(versionProbe.success)) {
-    return {
-      provider: GEMINI_PROVIDER,
-      status: "error" as const,
-      available: false,
-      authStatus: "unknown" as const,
-      checkedAt,
-      message: "Gemini CLI is installed but failed to run. Timed out while running command.",
-    };
-  }
-
-  const version = versionProbe.success.value;
-  if (version.code !== 0) {
-    const detail = detailFromResult(version);
-    return {
-      provider: GEMINI_PROVIDER,
-      status: "error" as const,
-      available: false,
-      authStatus: "unknown" as const,
-      checkedAt,
-      message: detail
-        ? `Gemini CLI is installed but failed to run. ${detail}`
-        : "Gemini CLI is installed but failed to run.",
-    };
-  }
-
-  return {
-    provider: GEMINI_PROVIDER,
-    status: "ready" as const,
-    available: true,
-    authStatus: "unknown" as const,
-    checkedAt,
-  } satisfies ServerProviderStatus;
-});
-
 // ── Layer ───────────────────────────────────────────────────────────
 
 export const ProviderHealthLive = Layer.effect(
   ProviderHealth,
   Effect.gen(function* () {
-    const codexStatusFiber = yield* checkCodexProviderStatus.pipe(Effect.forkScoped);
-    const geminiStatusFiber = yield* checkGeminiProviderStatus.pipe(Effect.forkScoped);
+    const codexStatusFiber = yield* checkCodexProviderStatus.pipe(
+      Effect.map(Array.of),
+      Effect.forkScoped,
+    );
 
     return {
-      getStatuses: Effect.all([Fiber.join(codexStatusFiber), Fiber.join(geminiStatusFiber)]).pipe(
-        Effect.map(([codex, gemini]) => [codex, gemini]),
-      ),
+      getStatuses: Fiber.join(codexStatusFiber),
     } satisfies ProviderHealthShape;
   }),
 );

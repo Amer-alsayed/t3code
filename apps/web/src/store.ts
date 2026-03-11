@@ -189,14 +189,13 @@ function toLegacySessionStatus(
 }
 
 function toLegacyProvider(providerName: string | null): ProviderKind {
-  if (providerName === "codex" || providerName === "gemini") {
+  if (providerName === "codex") {
     return providerName;
   }
   return "codex";
 }
 
 const CODEX_MODEL_SLUGS = new Set<string>(getModelOptions("codex").map((option) => option.slug));
-const GEMINI_MODEL_SLUGS = new Set<string>(getModelOptions("gemini").map((option) => option.slug));
 
 function inferProviderForThreadModel(input: {
   readonly model: string;
@@ -204,13 +203,6 @@ function inferProviderForThreadModel(input: {
 }): ProviderKind {
   if (input.sessionProviderName === "codex") {
     return input.sessionProviderName;
-  }
-  if (input.sessionProviderName === "gemini") {
-    return input.sessionProviderName;
-  }
-  const normalizedGemini = normalizeModelSlug(input.model, "gemini");
-  if (normalizedGemini && GEMINI_MODEL_SLUGS.has(normalizedGemini)) {
-    return "gemini";
   }
   const normalizedCodex = normalizeModelSlug(input.model, "codex");
   if (normalizedCodex && CODEX_MODEL_SLUGS.has(normalizedCodex)) {

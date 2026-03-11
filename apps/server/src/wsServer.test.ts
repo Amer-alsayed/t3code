@@ -72,13 +72,6 @@ const defaultProviderStatuses: ReadonlyArray<ServerProviderStatus> = [
     authStatus: "authenticated",
     checkedAt: "2026-01-01T00:00:00.000Z",
   },
-  {
-    provider: "gemini",
-    status: "ready",
-    available: true,
-    authStatus: "unknown",
-    checkedAt: "2026-01-01T00:00:00.000Z",
-  },
 ];
 
 const defaultProviderHealthService: ProviderHealthShape = {

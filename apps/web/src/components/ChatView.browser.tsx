@@ -107,13 +107,6 @@ function createBaseServerConfig(): ServerConfig {
         authStatus: "authenticated",
         checkedAt: NOW_ISO,
       },
-      {
-        provider: "gemini",
-        status: "ready",
-        available: true,
-        authStatus: "unknown",
-        checkedAt: NOW_ISO,
-      },
     ],
     availableEditors: [],
   };
