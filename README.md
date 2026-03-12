@@ -5,7 +5,7 @@ T3 Code is a minimal web GUI for coding agents. Currently Codex-Gemini first, wi
 ## How to use
 
 > [!WARNING]
-> You need to have [Codex CLI](https://github.com/openai/codex) installed and authorized for T3 Code to work. and also gemini cli downloaded and logged in in order for gemini to work 
+> You need to have [Codex CLI](https://github.com/openai/codex) installed and authorized for T3 Code to work. and also gemini [Gemini Cli](https://github.com/google-gemini/gemini-cli) downloaded and logged in in order for gemini to work 
 
 ```bash
 npx t3
